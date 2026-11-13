@@ -12,19 +12,28 @@ import (
 )
 
 const (
-	defaultWorkers       = 4
-	maxWorkers           = 1024
-	defaultQueueCapacity = 32
-	maxQueueCapacity     = 65536
+	defaultWorkers          = 4
+	maxWorkers              = 1024
+	defaultQueueCapacity    = 32
+	maxQueueCapacity        = 65536
+	defaultProcessingDelay  = 0 * time.Second
+	maxProcessingDelay      = 5 * time.Minute
+	defaultProcessingJitter = 0 * time.Second
+	maxProcessingJitter     = 5 * time.Minute
+	maxCombinedDelay        = 10 * time.Minute
+	defaultDelaySeed        = int64(1)
 )
 
 type Config struct {
 	config.Config
-	ID              string
-	ListenAddr      string
-	ShutdownTimeout time.Duration
-	Workers         int
-	QueueCapacity   int
+	ID               string
+	ListenAddr       string
+	ShutdownTimeout  time.Duration
+	Workers          int
+	QueueCapacity    int
+	ProcessingDelay  time.Duration
+	ProcessingJitter time.Duration
+	DelaySeed        int64
 }
 
 var backendID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -35,12 +44,15 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		Config:          common,
-		ID:              "backend",
-		ListenAddr:      ":8080",
-		ShutdownTimeout: 15 * time.Second,
-		Workers:         defaultWorkers,
-		QueueCapacity:   defaultQueueCapacity,
+		Config:           common,
+		ID:               "backend",
+		ListenAddr:       ":8080",
+		ShutdownTimeout:  15 * time.Second,
+		Workers:          defaultWorkers,
+		QueueCapacity:    defaultQueueCapacity,
+		ProcessingDelay:  defaultProcessingDelay,
+		ProcessingJitter: defaultProcessingJitter,
+		DelaySeed:        defaultDelaySeed,
 	}
 
 	if value, ok := lookupEnv("SBR_BACKEND_ID"); ok {
@@ -86,6 +98,34 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("invalid SBR_BACKEND_QUEUE_CAPACITY %q: expected an integer from 0 to %d", value, maxQueueCapacity)
 		}
 		cfg.QueueCapacity = n
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_PROCESSING_DELAY"); ok {
+		d, err := time.ParseDuration(value)
+		if err != nil || d < 0 || d > maxProcessingDelay {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_PROCESSING_DELAY %q: expected a non-negative duration up to %v", value, maxProcessingDelay)
+		}
+		cfg.ProcessingDelay = d
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_PROCESSING_JITTER"); ok {
+		d, err := time.ParseDuration(value)
+		if err != nil || d < 0 || d > maxProcessingJitter {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_PROCESSING_JITTER %q: expected a non-negative duration up to %v", value, maxProcessingJitter)
+		}
+		cfg.ProcessingJitter = d
+	}
+
+	if cfg.ProcessingDelay > maxCombinedDelay-cfg.ProcessingJitter {
+		return Config{}, fmt.Errorf("invalid SBR_BACKEND_PROCESSING_DELAY: combined processing delay and jitter exceeds %v", maxCombinedDelay)
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_DELAY_SEED"); ok {
+		seed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_DELAY_SEED %q: expected an integer", value)
+		}
+		cfg.DelaySeed = seed
 	}
 
 	return cfg, nil

@@ -17,7 +17,8 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
 
-	pool := NewPool(cfg.Workers, cfg.QueueCapacity, nil)
+	delayModel := NewDelayModel(cfg.ProcessingDelay, cfg.ProcessingJitter, cfg.DelaySeed)
+	pool := NewPool(cfg.Workers, cfg.QueueCapacity, makeProcessor(delayModel))
 	server := &http.Server{
 		Handler:                      Handler(cfg.ID, pool),
 		ReadHeaderTimeout:            5 * time.Second,
@@ -26,7 +27,12 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 		DisableGeneralOptionsHandler: true,
 		ErrorLog:                     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
-	return serve(ctx, server, listener, pool, cfg.ShutdownTimeout, logger.With("backend_id", cfg.ID))
+	return serve(ctx, server, listener, pool, cfg.ShutdownTimeout, logger.With(
+		"backend_id", cfg.ID,
+		"processing_delay", cfg.ProcessingDelay,
+		"processing_jitter", cfg.ProcessingJitter,
+		"delay_seed", cfg.DelaySeed,
+	))
 }
 
 func serve(ctx context.Context, server *http.Server, listener net.Listener, pool *Pool, timeout time.Duration, logger *slog.Logger) error {
