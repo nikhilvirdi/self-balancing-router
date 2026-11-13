@@ -100,6 +100,8 @@ func TestLoadProxyInvalid(t *testing.T) {
 		{"SBR_PROXY_POLICY", "  "},
 		{"SBR_PROXY_POLICY", "ROUND-ROBIN"},
 		{"SBR_PROXY_POLICY", "round_robin"},
+		{"SBR_PROXY_POLICY", "least-connections"},
+		{"SBR_PROXY_POLICY", "lr"},
 		{"SBR_PROXY_HEALTH_CHECK_ENABLED", "maybe"},
 		{"SBR_PROXY_HEALTH_CHECK_INTERVAL", "fast"},
 		{"SBR_PROXY_HEALTH_CHECK_INTERVAL", "0"},

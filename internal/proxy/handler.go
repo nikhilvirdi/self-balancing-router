@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"slices"
+	"sync"
+	"time"
 )
 
 func handler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
@@ -26,6 +28,29 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 		ok(w, r)
 	})
 
+	// Publish each reservation before the next selection reads the tracker.
+	var assignmentMu sync.Mutex
+	assign := func(candidates []Backend) (*httputil.ReverseProxy, int, Observation, string) {
+		assignmentMu.Lock()
+		defer assignmentMu.Unlock()
+
+		backend, selected := policy.Select(candidates)
+		observation := Observation{BackendID: backend.ID}
+		if !selected || !slices.Contains(candidates, backend) {
+			return nil, 0, observation, "invalid routing policy selection"
+		}
+		upstream := upstreams[backend.ID]
+		if upstream == nil {
+			return nil, 0, observation, "missing upstream handler"
+		}
+		index, ok := tracker.begin(backend.ID)
+		if !ok {
+			return nil, 0, observation, "missing backend request tracking state"
+		}
+		observation.StartedAt = time.Now()
+		return upstream, index, observation, ""
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case livePath, readyPath:
@@ -39,19 +64,13 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 			routingUnavailable(w)
 			return
 		}
-		backend, selected := policy.Select(candidates)
-		if !selected || !slices.Contains(candidates, backend) {
-			logger.Error("invalid routing policy selection", "backend_id", backend.ID)
+		upstream, index, observation, failure := assign(candidates)
+		if failure != "" {
+			logger.Error(failure, "backend_id", observation.BackendID)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		upstream := upstreams[backend.ID]
-		if upstream == nil {
-			logger.Error("missing upstream handler", "backend_id", backend.ID)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-			return
-		}
-		forwardTracked(w, r, upstream, backend.ID, tracker, observer, logger)
+		forwardTracked(w, r, upstream, tracker, index, observation, observer, logger)
 	})
 }
 

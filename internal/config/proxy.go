@@ -13,6 +13,7 @@ type ProxyPolicy string
 const (
 	PolicyFirstEligible ProxyPolicy = "first-eligible"
 	PolicyRoundRobin    ProxyPolicy = "round-robin"
+	PolicyLeastRequests ProxyPolicy = "least-requests"
 )
 
 type ProxyConfig struct {
@@ -42,10 +43,10 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q or %q", value, PolicyFirstEligible, PolicyRoundRobin)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests)
 		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {

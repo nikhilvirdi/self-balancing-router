@@ -23,6 +23,7 @@ func TestConfiguredPolicies(t *testing.T) {
 		{"default", "", []string{"backend-a", "backend-a", "backend-a"}},
 		{"explicit first eligible", "first-eligible", []string{"backend-a", "backend-a", "backend-a"}},
 		{"round robin", "round-robin", []string{"backend-a", "backend-b", "backend-a"}},
+		{"least requests", "least-requests", []string{"backend-a", "backend-a", "backend-a"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			urls := identityBackends(t, 2)
@@ -88,7 +89,7 @@ func assertPolicyResponse(t *testing.T, client *http.Client, url, want string) {
 
 func TestRoundRobinForwarding(t *testing.T) {
 	const count = 5
-	registry, tracker, proxy, observations := startRoundRobinProxy(t, 16, identityBackends(t, count)...)
+	registry, tracker, proxy, observations := startObservedPolicyProxy(t, config.PolicyRoundRobin, 16, identityBackends(t, count)...)
 	events, logger := healthLogs()
 	stop := startHealthChecks(t.Context(), registry, healthTestConfig(), logger)
 	defer stop()
@@ -127,7 +128,16 @@ func TestRoundRobinForwarding(t *testing.T) {
 }
 
 func TestRoundRobinConcurrentForwarding(t *testing.T) {
-	const count, total = 5, 20
+	testConcurrentPolicyForwarding(t, config.PolicyRoundRobin, 20)
+}
+
+func TestLeastRequestsConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyLeastRequests, 103)
+}
+
+func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, total int) {
+	t.Helper()
+	const count = 5
 	entered := make(chan string, total)
 	release := make(chan struct{})
 	urls := make([]string, count)
@@ -144,7 +154,7 @@ func TestRoundRobinConcurrentForwarding(t *testing.T) {
 		t.Cleanup(server.Close)
 		urls[i] = server.URL
 	}
-	registry, tracker, proxy, observations := startRoundRobinProxy(t, total, urls...)
+	registry, tracker, proxy, observations := startObservedPolicyProxy(t, policy, total, urls...)
 	results := make([]<-chan requestResult, total)
 	for i := range results {
 		results[i] = startObservedRequest(t, t.Context(), proxy, "/items")
@@ -153,11 +163,15 @@ func TestRoundRobinConcurrentForwarding(t *testing.T) {
 	for range total {
 		started[waitFor(t, entered)]++
 	}
-	for _, candidate := range registry.Snapshot() {
-		if got := started[candidate.ID]; got != total/count {
-			t.Errorf("requests to %s = %d, want %d", candidate.ID, got, total/count)
+	for i, candidate := range registry.Snapshot() {
+		want := total / count
+		if i < total%count {
+			want++
 		}
-		assertInFlight(t, tracker, candidate.ID, total/count)
+		if got := started[candidate.ID]; got != want {
+			t.Errorf("requests to %s = %d, want %d", candidate.ID, got, want)
+		}
+		assertInFlight(t, tracker, candidate.ID, want)
 	}
 	assertNoObservation(t, observations)
 	close(release)
@@ -176,8 +190,8 @@ func TestRoundRobinConcurrentForwarding(t *testing.T) {
 	}
 	for _, candidate := range registry.Snapshot() {
 		id := candidate.ID
-		if completed[id] != total/count || observed[id] != total/count {
-			t.Errorf("%s completed %d and observed %d, want %d each", id, completed[id], observed[id], total/count)
+		if completed[id] != started[id] || observed[id] != started[id] {
+			t.Errorf("%s completed %d and observed %d, want %d each", id, completed[id], observed[id], started[id])
 		}
 		assertInFlight(t, tracker, id, 0)
 	}
@@ -200,7 +214,7 @@ func TestRoundRobinFailureAndCancellationFeedback(t *testing.T) {
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, tracker, proxy, observations := startRoundRobinProxy(t, 4, upstream.URL, closedURL)
+	_, tracker, proxy, observations := startObservedPolicyProxy(t, config.PolicyRoundRobin, 4, upstream.URL, closedURL)
 	assertResponse(t, proxy, http.MethodGet, "/items", 500, "upstream failure\n")
 	assertObservation(t, observations, "backend-a", 500, UpstreamResponse)
 	assertResponse(t, proxy, http.MethodGet, "/items", 502, "bad gateway\n")
@@ -221,14 +235,93 @@ func TestRoundRobinFailureAndCancellationFeedback(t *testing.T) {
 	assertNoObservation(t, observations)
 }
 
-func startRoundRobinProxy(t *testing.T, buffer int, urls ...string) (*Registry, *requestTracker, *httptest.Server, <-chan Observation) {
+func TestLeastRequestsEligibilityAndFeedback(t *testing.T) {
+	entered := make(chan struct{})
+	secondEntered, finishSecond := make(chan struct{}), make(chan struct{})
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/hold" {
+			close(entered)
+			<-r.Context().Done()
+			return
+		}
+		_, _ = io.WriteString(w, "backend-a")
+	}))
+	t.Cleanup(first.Close)
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/finish-first" {
+			close(secondEntered)
+			select {
+			case <-finishSecond:
+				_, _ = io.WriteString(w, "backend-b")
+			case <-r.Context().Done():
+			}
+			return
+		}
+		http.Error(w, "backend overloaded", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(second.Close)
+	registry, tracker, proxy, observations := startObservedPolicyProxy(t, config.PolicyLeastRequests, 8, first.URL, second.URL)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	pending := startObservedRequest(t, ctx, proxy, "/hold")
+	waitFor(t, entered)
+	assertInFlight(t, tracker, "backend-a", 1)
+
+	_, independent, other, otherObservations := startObservedPolicyProxy(t, config.PolicyLeastRequests, 2, first.URL, second.URL)
+	assertResponse(t, other, http.MethodGet, "/items", 200, "backend-a")
+	assertObservation(t, otherObservations, "backend-a", 200, UpstreamResponse)
+	assertInFlight(t, independent, "backend-a", 0)
+
+	earlierCompletion := startObservedRequest(t, t.Context(), proxy, "/finish-first")
+	waitFor(t, secondEntered)
+	assertInFlight(t, tracker, "backend-b", 1)
+	close(finishSecond)
+	if got := waitFor(t, earlierCompletion); got.err != nil || got.body != "backend-b" {
+		t.Fatalf("later assignment = %+v, want backend-b", got)
+	}
+	assertObservation(t, observations, "backend-b", 200, UpstreamResponse)
+
+	assertResponse(t, proxy, http.MethodGet, "/livez", 200, "ok\n")
+	assertResponse(t, proxy, http.MethodGet, "/readyz", 200, "ok\n")
+	assertNoObservation(t, observations)
+	assertInFlight(t, tracker, "backend-a", 1)
+	assertInFlight(t, tracker, "backend-b", 0)
+	assertResponse(t, proxy, http.MethodGet, "/items", 503, "backend overloaded\n")
+	assertObservation(t, observations, "backend-b", 503, UpstreamResponse)
+	assertInFlight(t, tracker, "backend-b", 0)
+	assertHealth(t, registry, "backend-b", Unknown)
+
+	setHealth(t, registry, "backend-b", Unhealthy)
+	assertResponse(t, proxy, http.MethodGet, "/items", 200, "backend-a")
+	assertObservation(t, observations, "backend-a", 200, UpstreamResponse)
+	setHealth(t, registry, "backend-a", Unhealthy)
+	assertResponse(t, proxy, http.MethodGet, "/items", 503, "request routing is unavailable\n")
+	assertResponse(t, proxy, http.MethodGet, "/readyz", 503, "request routing is unavailable\n")
+	assertNoObservation(t, observations)
+	assertInFlight(t, tracker, "backend-a", 1)
+	setHealth(t, registry, "backend-b", Healthy)
+	assertResponse(t, proxy, http.MethodGet, "/items", 503, "backend overloaded\n")
+	assertObservation(t, observations, "backend-b", 503, UpstreamResponse)
+
+	cancel()
+	if got := waitFor(t, pending); !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("client result = %+v, want cancellation", got)
+	}
+	assertObservation(t, observations, "backend-a", 0, Canceled)
+	assertInFlight(t, tracker, "backend-a", 0)
+	assertHealth(t, registry, "backend-a", Unhealthy)
+	setHealth(t, registry, "backend-a", Healthy)
+	assertResponse(t, proxy, http.MethodGet, "/items", 200, "backend-a")
+	assertObservation(t, observations, "backend-a", 200, UpstreamResponse)
+	assertInFlight(t, tracker, "backend-a", 0)
+	assertInFlight(t, tracker, "backend-b", 0)
+	assertNoObservation(t, observations)
+}
+
+func startObservedPolicyProxy(t *testing.T, policy config.ProxyPolicy, buffer int, urls ...string) (*Registry, *requestTracker, *httptest.Server, <-chan Observation) {
 	t.Helper()
-	registry := healthRegistry(t, urls...)
 	observations := make(chan Observation, buffer)
-	tracker, handle := observedHandler(t, registry, &roundRobinPolicy{}, testTimeout, func(o Observation) { observations <- o })
-	server := httptest.NewServer(handle)
-	server.Client().Timeout = testTimeout
-	t.Cleanup(server.Close)
+	registry, tracker, server := startObservedProxyWithPolicy(t, policy, observations, testTimeout, urls...)
 	return registry, tracker, server, observations
 }
 

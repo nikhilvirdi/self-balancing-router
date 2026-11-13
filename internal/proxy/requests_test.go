@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 )
 
 func TestRequestTracker(t *testing.T) {
@@ -94,6 +96,13 @@ func TestObservationUpstreamStatus(t *testing.T) {
 }
 
 func TestObservationGatewayFailures(t *testing.T) {
+	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests} {
+		t.Run(string(policy), func(t *testing.T) { testObservationGatewayFailures(t, policy) })
+	}
+}
+
+func testObservationGatewayFailures(t *testing.T, policy config.ProxyPolicy) {
+	t.Helper()
 	for _, timeout := range []bool{false, true} {
 		name := "refused"
 		if timeout {
@@ -106,14 +115,14 @@ func TestObservationGatewayFailures(t *testing.T) {
 					<-r.Context().Done()
 				}))
 				t.Cleanup(backend.Close)
-				registry, tracker, proxy := startObservedProxy(t, observations, 100*time.Millisecond, backend.URL)
+				registry, tracker, proxy := startObservedProxyWithPolicy(t, policy, observations, 100*time.Millisecond, backend.URL)
 				assertResponse(t, proxy, http.MethodGet, "/app", 504, "gateway timeout\n")
 				assertObservation(t, observations, "backend-a", 0, UpstreamTimeout)
 				assertInFlight(t, tracker, "backend-a", 0)
 				assertHealth(t, registry, "backend-a", Unknown)
 			} else {
 				listener := listenLoopback(t)
-				registry, tracker, proxy := startObservedProxy(t, observations, time.Second, "http://"+listener.Addr().String())
+				registry, tracker, proxy := startObservedProxyWithPolicy(t, policy, observations, time.Second, "http://"+listener.Addr().String())
 				if err := listener.Close(); err != nil {
 					t.Fatal(err)
 				}
@@ -356,7 +365,7 @@ func TestObservationDraining(t *testing.T) {
 	t.Cleanup(backend.Close)
 	registry := healthRegistry(t, backend.URL)
 	observations := make(chan Observation, 4)
-	tracker, handle := observedHandler(t, registry, firstEligiblePolicy{}, testTimeout, func(o Observation) { observations <- o })
+	tracker, handle := observedHandler(t, registry, config.PolicyFirstEligible, testTimeout, func(o Observation) { observations <- o })
 	listener := &observedListener{Listener: listenLoopback(t), closed: make(chan struct{})}
 	stop, done, request := startRequest(t, listener, &http.Server{Handler: handle}, testTimeout)
 	waitFor(t, entered)
@@ -394,7 +403,12 @@ func TestForwardTrackedObserver(t *testing.T) {
 			requestObservation(r).UpstreamStatus = http.StatusNoContent
 			w.WriteHeader(http.StatusNoContent)
 		})
-		forwardTracked(res, httptest.NewRequest(http.MethodGet, "/", nil), upstream, "backend-a", tracker, observer, slog.New(slog.DiscardHandler))
+		index, ok := tracker.begin("backend-a")
+		if !ok {
+			t.Fatal("missing tracker entry")
+		}
+		observation := Observation{BackendID: "backend-a", StartedAt: time.Now()}
+		forwardTracked(res, httptest.NewRequest(http.MethodGet, "/", nil), upstream, tracker, index, observation, observer, slog.New(slog.DiscardHandler))
 		assertInFlight(t, tracker, "backend-a", 0)
 		if res.Code != 204 || (observerPanics && calls != 1) {
 			t.Fatalf("response = %d, callback count = %d", res.Code, calls)
@@ -404,18 +418,27 @@ func TestForwardTrackedObserver(t *testing.T) {
 
 func startObservedProxy(t *testing.T, observations chan<- Observation, timeout time.Duration, urls ...string) (*Registry, *requestTracker, *httptest.Server) {
 	t.Helper()
+	return startObservedProxyWithPolicy(t, config.PolicyFirstEligible, observations, timeout, urls...)
+}
+
+func startObservedProxyWithPolicy(t *testing.T, policy config.ProxyPolicy, observations chan<- Observation, timeout time.Duration, urls ...string) (*Registry, *requestTracker, *httptest.Server) {
+	t.Helper()
 	registry := healthRegistry(t, urls...)
-	tracker, handle := observedHandler(t, registry, firstEligiblePolicy{}, timeout, func(o Observation) { observations <- o })
+	tracker, handle := observedHandler(t, registry, policy, timeout, func(o Observation) { observations <- o })
 	server := httptest.NewServer(handle)
 	server.Client().Timeout = testTimeout
 	t.Cleanup(server.Close)
 	return registry, tracker, server
 }
 
-func observedHandler(t *testing.T, registry *Registry, policy routingPolicy, timeout time.Duration, observer Observer) (*requestTracker, http.Handler) {
+func observedHandler(t *testing.T, registry *Registry, policyName config.ProxyPolicy, timeout time.Duration, observer Observer) (*requestTracker, http.Handler) {
 	t.Helper()
 	backends := registry.Snapshot()
 	tracker := newRequestTracker(backends)
+	policy, err := newRoutingPolicy(policyName, tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport := newTransport(time.Second, timeout)
 	t.Cleanup(transport.CloseIdleConnections)
 	logger := slog.New(slog.DiscardHandler)

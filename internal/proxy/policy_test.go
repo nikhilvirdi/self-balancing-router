@@ -18,6 +18,67 @@ func TestFirstEligiblePolicy(t *testing.T) {
 	assertSelection(t, policy, []Backend{a}, a, true)
 }
 
+func TestLeastRequestsSelection(t *testing.T) {
+	ids := []string{"e", "d", "c", "b", "a", "f", "g"}
+	for _, count := range []int{1, 2, 3, 5, 7} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			registry := newTestRegistry(t, ids[:count]...)
+			candidates := registry.Eligible()
+			tracker := newRequestTracker(candidates)
+			policy := leastRequestsPolicy{tracker: tracker}
+			assertSelection(t, policy, nil, Backend{}, false)
+			for range 3 {
+				assertSelection(t, policy, candidates, candidates[0], true)
+			}
+			var active []int
+			for _, candidate := range candidates[:count-1] {
+				index, ok := tracker.begin(candidate.ID)
+				if !ok {
+					t.Fatal("missing tracker entry", candidate.ID)
+				}
+				active = append(active, index)
+			}
+			assertSelection(t, policy, candidates, candidates[count-1], true)
+			for _, index := range active {
+				tracker.finish(index)
+			}
+			assertSelection(t, policy, candidates, candidates[0], true)
+		})
+	}
+}
+
+func TestLeastRequestsHealthAndTies(t *testing.T) {
+	registry := newTestRegistry(t, "c", "b", "a")
+	candidates := registry.Eligible()
+	tracker := newRequestTracker(candidates)
+	policy := leastRequestsPolicy{tracker: tracker}
+	var assigned []int
+	for _, id := range []string{"c", "b", "a", "a"} {
+		index, ok := tracker.begin(id)
+		if !ok {
+			t.Fatal("missing tracker entry", id)
+		}
+		assigned = append(assigned, index)
+	}
+	for range 3 {
+		assertSelection(t, policy, registry.Eligible(), candidates[0], true)
+	}
+	setHealth(t, registry, "c", Unhealthy)
+	assertSelection(t, policy, registry.Eligible(), candidates[1], true)
+	assertInFlight(t, tracker, "c", 1)
+	setHealth(t, registry, "c", Healthy)
+	candidates[0].Health = Healthy
+	assertSelection(t, policy, registry.Eligible(), candidates[0], true)
+	for _, candidate := range candidates {
+		setHealth(t, registry, candidate.ID, Unhealthy)
+	}
+	assertSelection(t, policy, registry.Eligible(), Backend{}, false)
+	for _, index := range assigned {
+		tracker.finish(index)
+	}
+	assertInFlight(t, tracker, "c", 0)
+}
+
 func TestRoundRobinCycles(t *testing.T) {
 	for _, count := range []int{1, 2, 3, 5, 7} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {

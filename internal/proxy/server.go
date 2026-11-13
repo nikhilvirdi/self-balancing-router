@@ -13,15 +13,16 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error {
-	policy, err := newRoutingPolicy(cfg.Policy)
-	if err != nil {
-		return err
-	}
 	registry, err := NewRegistry(cfg.Backends)
 	if err != nil {
 		return fmt.Errorf("initialize backend registry: %w", err)
 	}
 	backends := registry.Snapshot()
+	tracker := newRequestTracker(backends)
+	policy, err := newRoutingPolicy(cfg.Policy, tracker)
+	if err != nil {
+		return err
+	}
 	logger.Info("backend registry initialized", "backend_count", len(backends))
 	transport := newTransport(cfg.DialTimeout, cfg.ResponseHeaderTimeout)
 	defer transport.CloseIdleConnections()
@@ -37,7 +38,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 
 	server := &http.Server{
-		Handler:                      handler(registry, policy, upstreams, newRequestTracker(backends), nil, logger),
+		Handler:                      handler(registry, policy, upstreams, tracker, nil, logger),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,

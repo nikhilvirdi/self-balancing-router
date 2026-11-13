@@ -94,14 +94,7 @@ func requestObservation(r *http.Request) *Observation {
 	return observation
 }
 
-func forwardTracked(w http.ResponseWriter, r *http.Request, upstream http.Handler, backendID string, tracker *requestTracker, observer Observer, logger *slog.Logger) {
-	index, ok := tracker.begin(backendID)
-	if !ok {
-		logger.Error("missing backend request tracking state", "backend_id", backendID)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	observation := Observation{BackendID: backendID, StartedAt: time.Now(), Outcome: Interrupted}
+func forwardTracked(w http.ResponseWriter, r *http.Request, upstream http.Handler, tracker *requestTracker, index int, observation Observation, observer Observer, logger *slog.Logger) {
 	defer func() {
 		observation.FinishedAt = time.Now()
 		observation.Duration = observation.FinishedAt.Sub(observation.StartedAt)
