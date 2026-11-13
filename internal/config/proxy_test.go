@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +43,7 @@ func TestLoadProxy(t *testing.T) {
 				value, ok := tt.env[key]
 				return value, ok
 			})
-			if err != nil || got != tt.want {
+			if err != nil || !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("LoadProxy() = %+v, %v, want %+v", got, err, tt.want)
 			}
 		})

@@ -6,6 +6,8 @@ services:
     build:
       context: ..
       dockerfile: deployments/Dockerfile.proxy
+    environment:
+      SBR_PROXY_BACKENDS: "backend-a=http://backend-a:8080,backend-b=http://backend-b:8080,backend-c=http://backend-c:8080"
     read_only: true
     ports:
       - "127.0.0.1:8080:8080"

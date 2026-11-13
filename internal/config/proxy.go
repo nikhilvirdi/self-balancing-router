@@ -12,6 +12,7 @@ type ProxyConfig struct {
 	Config
 	ListenAddr      string
 	ShutdownTimeout time.Duration
+	Backends        []BackendConfig
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -39,6 +40,12 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_SHUTDOWN_TIMEOUT %q: expected a positive Go duration", value)
 		}
 		cfg.ShutdownTimeout = timeout
+	}
+	if value, ok := lookupEnv("SBR_PROXY_BACKENDS"); ok {
+		cfg.Backends, err = parseBackends(value)
+		if err != nil {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_BACKENDS: %w", err)
+		}
 	}
 	return cfg, nil
 }

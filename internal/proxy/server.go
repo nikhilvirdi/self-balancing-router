@@ -13,6 +13,12 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error {
+	registry, err := NewRegistry(cfg.Backends)
+	if err != nil {
+		return fmt.Errorf("initialize backend registry: %w", err)
+	}
+	logger.Info("backend registry initialized", "backend_count", len(registry.backends))
+
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddr)
 	if err != nil {
