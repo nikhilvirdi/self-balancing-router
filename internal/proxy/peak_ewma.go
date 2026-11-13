@@ -109,7 +109,7 @@ func (p *peakEWMAPolicy) score(id string, inFlight int, now time.Time) float64 {
 	if estimate := p.latency[id]; estimate != nil {
 		return estimate.score(now, inFlight, p.initialRTT, p.decay)
 	}
-	return float64(p.initialRTT) * float64(inFlight+1)
+	return float64(p.initialRTT) * (float64(inFlight) + 1)
 }
 
 func (p *peakEWMAPolicy) observe(o Observation) {

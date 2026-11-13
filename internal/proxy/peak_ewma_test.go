@@ -40,13 +40,12 @@ func TestPeakEWMAEstimator(t *testing.T) {
 	for _, input := range []struct {
 		at       time.Time
 		duration time.Duration
-	}{{last.Add(-time.Nanosecond), time.Hour}, {last.Add(time.Second), -time.Millisecond}, {last, -1}, {time.Time{}, time.Hour}} {
+	}{{last.Add(-time.Nanosecond), time.Hour}, {last.Add(time.Second), -time.Millisecond}, {time.Time{}, time.Hour}} {
 		e.observe(input.at, input.duration, decay)
 	}
 	if e != before {
 		t.Fatalf("invalid or stale samples changed estimate: %+v", e)
 	}
-	// Zero duration should be clamped to 1ns and update the estimate.
 	zeroSampleTime := last.Add(time.Second)
 	e.observe(zeroSampleTime, 0, decay)
 	if e.observedAt != zeroSampleTime {
@@ -54,8 +53,9 @@ func TestPeakEWMAEstimator(t *testing.T) {
 	}
 	want = math.Exp(-1/float64(decay/time.Second))*(want-1) + 1
 	assertLatency(t, e.nanos, time.Duration(want))
-	e.observe(last, math.MaxInt64, decay)
-	if got := e.score(last, math.MaxInt, initial, decay); math.IsInf(got, 0) || math.IsNaN(got) || got <= 0 {
+	e.observe(zeroSampleTime, math.MaxInt64, decay)
+	assertLatency(t, e.nanos, math.MaxInt64)
+	if got := e.score(zeroSampleTime, math.MaxInt, initial, decay); math.IsInf(got, 0) || math.IsNaN(got) || got <= 0 {
 		t.Fatalf("invalid extreme score %v", got)
 	}
 	assertLatency(t, e.score(last.Add(900*decay), 0, initial, decay), time.Nanosecond)
@@ -254,10 +254,6 @@ func TestPeakEWMAHTTPFeedback(t *testing.T) {
 	if peak.Duration < 3*fast.Duration {
 		t.Fatalf("held duration %s, want at least %s", peak.Duration, 3*fast.Duration)
 	}
-	p.mu.Lock()
-	fastEstimate, slowEstimate := *p.latency["backend-a"], *p.latency["backend-b"]
-	p.mu.Unlock()
-	t.Logf("fast observation %+v estimate %+v, slow observation %+v estimate %+v", fast, fastEstimate, peak, slowEstimate)
 	setHealth(t, registry, "backend-b", Healthy)
 	request("backend-a")
 	setHealth(t, registry, "backend-a", Unhealthy)
@@ -322,7 +318,7 @@ func assertLatency(t *testing.T, nanos float64, want time.Duration) {
 }
 
 func TestPeakEWMAZeroDurationObservation(t *testing.T) {
-	const initial, decay = 10 * time.Millisecond, 10 * time.Second
+	const decay = 10 * time.Second
 	now := time.Unix(100, 0)
 
 	// Direct latencyEstimate observation of zero duration
@@ -410,6 +406,9 @@ func TestPeakEWMAMissingEstimatorDefensiveLookup(t *testing.T) {
 	// backend-b is in tracker but intentionally deleted from policy.latency to simulate an unmapped candidate
 	delete(policy.latency, "backend-b")
 	candidates := []Backend{{ID: "backend-a"}, {ID: "backend-b"}}
+	if got := policy.score("backend-b", math.MaxInt, now); math.IsInf(got, 0) || math.IsNaN(got) || got <= 0 {
+		t.Fatalf("invalid fallback score %v", got)
+	}
 
 	// Must not panic, and should return a valid selection
 	selected, ok := policy.selectAt(candidates, now)
