@@ -15,6 +15,7 @@ type ProxyConfig struct {
 	DialTimeout           time.Duration
 	ResponseHeaderTimeout time.Duration
 	Backends              []BackendConfig
+	HealthCheck           HealthCheckConfig
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -68,6 +69,10 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		if err != nil {
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_BACKENDS: %w", err)
 		}
+	}
+	cfg.HealthCheck, err = loadHealthCheck(lookupEnv)
+	if err != nil {
+		return ProxyConfig{}, err
 	}
 	return cfg, nil
 }

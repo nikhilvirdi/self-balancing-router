@@ -40,6 +40,8 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 		DisableGeneralOptionsHandler: true,
 		ErrorLog:                     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+	stopHealthChecks := startHealthChecks(ctx, registry, cfg.HealthCheck, logger)
+	defer stopHealthChecks()
 	return serve(ctx, server, listener, cfg.ShutdownTimeout, logger)
 }
 

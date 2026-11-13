@@ -16,6 +16,17 @@ const (
 	Unhealthy
 )
 
+func (h Health) String() string {
+	switch h {
+	case Healthy:
+		return "healthy"
+	case Unhealthy:
+		return "unhealthy"
+	default:
+		return "unknown"
+	}
+}
+
 // Backend is a value snapshot of a configured backend and its current health.
 type Backend struct {
 	ID     string
