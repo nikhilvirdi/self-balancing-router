@@ -1,0 +1,24 @@
+name: self-balancing-router
+
+services:
+  proxy:
+    image: self-balancing-router/proxy
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.proxy
+    read_only: true
+
+  backend-a: &backend
+    image: self-balancing-router/backend
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile.backend
+    read_only: true
+  backend-b:
+    <<: *backend
+  backend-c:
+    <<: *backend
+
+networks:
+  default:
+    internal: true
