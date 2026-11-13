@@ -23,7 +23,7 @@ func TestHandler(t *testing.T) {
 		{http.MethodGet, "/livez/", http.StatusServiceUnavailable, "request routing is unavailable\n", ""},
 		{http.MethodGet, "/api/../livez", http.StatusServiceUnavailable, "request routing is unavailable\n", ""},
 	}
-	handle := handler()
+	handle := handler(newTestRegistry(t), nil)
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			response := httptest.NewRecorder()

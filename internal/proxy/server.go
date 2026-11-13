@@ -17,7 +17,14 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	if err != nil {
 		return fmt.Errorf("initialize backend registry: %w", err)
 	}
-	logger.Info("backend registry initialized", "backend_count", len(registry.backends))
+	backends := registry.Snapshot()
+	logger.Info("backend registry initialized", "backend_count", len(backends))
+	transport := newTransport()
+	defer transport.CloseIdleConnections()
+	upstreams, err := newUpstreams(backends, transport, logger)
+	if err != nil {
+		return err
+	}
 
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", cfg.ListenAddr)
@@ -26,7 +33,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 
 	server := &http.Server{
-		Handler:                      handler(),
+		Handler:                      handler(registry, upstreams),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,
