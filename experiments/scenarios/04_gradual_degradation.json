@@ -1,0 +1,112 @@
+{
+  "id": "scenario_4_gradual_degradation",
+  "name": "Gradual Backend Degradation",
+  "description": "Multi-phase non-stationary benchmark where backend-a undergoes progressive performance deterioration in 3 discrete steps (20ms -> 60ms -> 110ms -> 200ms), descending from the fastest instance in the cluster to the slowest. Evaluates how routing policies handle shifting rank orders over extended operational periods.",
+  "duration_seconds": 120.0,
+  "timeline": {
+    "warmup_seconds": 15.0,
+    "measurement_seconds": 95.0,
+    "cooldown_seconds": 10.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 15.0,
+        "target_rps": 35.0
+      },
+      {
+        "start_seconds": 15.0,
+        "duration_seconds": 95.0,
+        "target_rps": 70.0
+      },
+      {
+        "start_seconds": 110.0,
+        "duration_seconds": 10.0,
+        "target_rps": 35.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [
+    {
+      "timestamp_seconds": 30.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "60ms",
+      "processing_jitter": "15ms",
+      "description": "Phase 1 degradation: backend-a delay increases from 20ms to 60ms, falling behind backend-b (40ms)."
+    },
+    {
+      "timestamp_seconds": 60.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "110ms",
+      "processing_jitter": "25ms",
+      "description": "Phase 2 degradation: backend-a delay increases from 60ms to 110ms, falling behind backend-c (80ms)."
+    },
+    {
+      "timestamp_seconds": 85.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "200ms",
+      "processing_jitter": "40ms",
+      "description": "Phase 3 degradation: backend-a delay increases from 110ms to 200ms, becoming the slowest backend in the fleet."
+    }
+  ],
+  "evaluation": {
+    "primary_hypothesis": "Routing policies must continuously down-weight backend-a as its performance ranking degrades. Standard UCB1 displays severe hysteresis at each phase boundary, whereas Least Requests and Discounted UCB smoothly track the shifting optimum.",
+    "target_metrics": [
+      "rank_transition_latency",
+      "mean_latency_by_phase",
+      "queue_dwell_variance",
+      "cumulative_regret"
+    ],
+    "policy_expectations": {
+      "round_robin": "Uniform allocation throughout; overall mean latency increases linearly with each degradation step.",
+      "least_requests": "Dynamically rebalances traffic proportions across backends at each threshold proportional to Little's Law.",
+      "p2c": "Seamlessly shifts preference to the new best options as in-flight counts adjust.",
+      "p2c_peak_ewma": "Tracks latency shifts smoothly without sudden oscillatory swings.",
+      "ucb1": "Experiences increasing inertia across successive degradation steps as total historical pull count N_a grows.",
+      "sliding_window_ucb": "Maintains bounded memory horizon, tracking ranking transitions with uniform delay across all phases.",
+      "discounted_ucb": "Continuous exponential forgetting ensures constant adaptation speed at each degradation step."
+    }
+  }
+}

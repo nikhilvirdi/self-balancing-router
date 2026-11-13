@@ -1,0 +1,96 @@
+{
+  "id": "scenario_3_sudden_degradation",
+  "name": "Sudden Backend Degradation",
+  "description": "Non-stationary benchmark where the fastest backend (backend-a, initially 20ms delay) experiences a sudden 15x latency degradation to 300ms at t=40s under steady 80 RPS load. Evaluates dynamic detection latency, queue overload prevention, and sticky-arm regret in Multi-Armed Bandit policies.",
+  "duration_seconds": 90.0,
+  "timeline": {
+    "warmup_seconds": 15.0,
+    "measurement_seconds": 65.0,
+    "cooldown_seconds": 10.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 15.0,
+        "target_rps": 40.0
+      },
+      {
+        "start_seconds": 15.0,
+        "duration_seconds": 65.0,
+        "target_rps": 80.0
+      },
+      {
+        "start_seconds": 80.0,
+        "duration_seconds": 10.0,
+        "target_rps": 40.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [
+    {
+      "timestamp_seconds": 40.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "300ms",
+      "processing_jitter": "50ms",
+      "description": "Sudden 15x latency degradation on backend-a from 20ms to 300ms, collapsing service capacity from 200 rps to 13.3 rps."
+    }
+  ],
+  "evaluation": {
+    "primary_hypothesis": "Standard UCB1 will suffer severe sticky-arm pathology due to historical sample inertia, causing queue overflow (HTTP 503 errors) on backend-a, while sliding-window and discounted MAB algorithms adapt rapidly to the non-stationary change.",
+    "target_metrics": [
+      "adaptation_time_seconds",
+      "p99_latency_ms",
+      "post_degradation_503_count",
+      "cumulative_regret_step_increase"
+    ],
+    "policy_expectations": {
+      "round_robin": "Continues sending 20% of traffic to backend-a; backend-a queue overflows rapidly resulting in high HTTP 503 error rates.",
+      "least_requests": "Instantly detects in-flight queue accumulation on backend-a and diverts subsequent requests to backend-b and c within tens of milliseconds.",
+      "p2c": "Quickly avoids backend-a once its in-flight count surges; protects cluster from queue drops.",
+      "p2c_peak_ewma": "Reacts swiftly; peak latency memory prevents premature re-selection of backend-a.",
+      "ucb1": "Fails to adapt quickly: hundreds of historical 20ms rewards anchor backend-a's empirical mean, keeping it preferred for several seconds until enough 300ms samples accumulate.",
+      "sliding_window_ucb": "Evicts pre-degradation samples as window slides, restoring optimal allocation to backend-b significantly faster than UCB1.",
+      "discounted_ucb": "Exponentially discounts old observations, rapidly adapting routing weights without severe queue spill."
+    }
+  }
+}

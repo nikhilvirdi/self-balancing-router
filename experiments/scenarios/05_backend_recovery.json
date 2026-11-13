@@ -1,0 +1,102 @@
+{
+  "id": "scenario_5_backend_recovery",
+  "name": "Backend Degradation and Recovery",
+  "description": "Non-stationary benchmark testing both degradation avoidance and recovery re-exploration: backend-a degrades at t=30s (20ms -> 250ms) and recovers to baseline at t=65s (20ms). Measures the recovery discovery time, exploration efficiency, and traffic restoration rate.",
+  "duration_seconds": 100.0,
+  "timeline": {
+    "warmup_seconds": 15.0,
+    "measurement_seconds": 75.0,
+    "cooldown_seconds": 10.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 15.0,
+        "target_rps": 40.0
+      },
+      {
+        "start_seconds": 15.0,
+        "duration_seconds": 75.0,
+        "target_rps": 80.0
+      },
+      {
+        "start_seconds": 90.0,
+        "duration_seconds": 10.0,
+        "target_rps": 40.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [
+    {
+      "timestamp_seconds": 30.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "250ms",
+      "processing_jitter": "50ms",
+      "description": "backend-a degrades from 20ms to 250ms, triggering traffic diversion."
+    },
+    {
+      "timestamp_seconds": 65.0,
+      "target": "backend-a",
+      "action": "reset",
+      "description": "backend-a recovers to baseline 20ms delay and 5ms jitter, requiring policies to re-discover its capacity."
+    }
+  ],
+  "evaluation": {
+    "primary_hypothesis": "Algorithms requiring active exploration (MABs) discover recovered backends via expanding confidence intervals, whereas greedy heuristics risk under-utilizing recovered instances until queue states clear.",
+    "target_metrics": [
+      "recovery_detection_time_seconds",
+      "traffic_restoration_slope",
+      "post_recovery_mean_latency",
+      "cumulative_regret"
+    ],
+    "policy_expectations": {
+      "round_robin": "Allocates constant 20% throughout; reaps recovery benefits immediately without discovery lag.",
+      "least_requests": "Instantly routes new requests to backend-a as soon as its active in-flight count drops to 0.",
+      "p2c": "Quickly re-incorporates backend-a into high-frequency selection as samples draw low in-flight counts.",
+      "p2c_peak_ewma": "Probes backend-a as its peak EWMA latency decays over time, restoring optimal routing.",
+      "ucb1": "Exploration bonus on starved backend-a grows monotonically until triggering exploratory pulls that detect recovery.",
+      "sliding_window_ucb": "Swiftly flushes degraded samples upon recovery and re-establishes dominant allocation.",
+      "discounted_ucb": "Quickly incorporates high rewards from fresh 20ms responses, ramping traffic back up within seconds."
+    }
+  }
+}

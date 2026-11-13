@@ -1,0 +1,102 @@
+{
+  "id": "scenario_6_traffic_bursts",
+  "name": "Traffic Bursts and Congestion",
+  "description": "Dynamic workload scenario subjecting heterogeneous backends to transient high-volume arrival bursts (surging from 50 RPS up to 160 RPS and 200 RPS). At 160+ RPS, uniform routing exceeds the capacity of slower backends (backend-d and e), inducing severe queueing and HTTP 503 rejections, while load-aware and bandit policies absorb the surge using high-capacity backends (backend-a and b).",
+  "duration_seconds": 90.0,
+  "timeline": {
+    "warmup_seconds": 15.0,
+    "measurement_seconds": 65.0,
+    "cooldown_seconds": 10.0
+  },
+  "workload": {
+    "pattern": "bursty",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 15.0,
+        "target_rps": 50.0
+      },
+      {
+        "start_seconds": 15.0,
+        "duration_seconds": 15.0,
+        "target_rps": 50.0
+      },
+      {
+        "start_seconds": 30.0,
+        "duration_seconds": 15.0,
+        "target_rps": 160.0
+      },
+      {
+        "start_seconds": 45.0,
+        "duration_seconds": 15.0,
+        "target_rps": 50.0
+      },
+      {
+        "start_seconds": 60.0,
+        "duration_seconds": 15.0,
+        "target_rps": 200.0
+      },
+      {
+        "start_seconds": 75.0,
+        "duration_seconds": 15.0,
+        "target_rps": 50.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [],
+  "evaluation": {
+    "primary_hypothesis": "Round Robin causes massive HTTP 503 rejection spikes during bursts because it overflows slow backends (D and E), whereas concurrency-aware and bandit policies steer surges toward fast backends (A and B), preserving cluster throughput.",
+    "target_metrics": [
+      "burst_error_rate_503",
+      "peak_queue_dwell_ms",
+      "throughput_preservation_ratio",
+      "p99_latency_during_burst"
+    ],
+    "policy_expectations": {
+      "round_robin": "Saturates backend-d and e queues within seconds of burst start; exhibits high 503 error rates (>15%) during both bursts.",
+      "least_requests": "Dynamically spills burst requests to the highest throughput backends (A and B), maintaining zero or near-zero 503 errors.",
+      "p2c": "Effectively diverts bursts away from backends with growing queue depths, achieving high resilience.",
+      "p2c_peak_ewma": "Absorbs surge without destabilizing queue distributions; dampens queue oscillation.",
+      "ucb1": "Heavy preference for backend-a keeps rejection rates low, though exploratory pulls may drop occasional requests into saturated slow queues.",
+      "sliding_window_ucb": "Robust during bursts, concentrating allocation on high-rate arms.",
+      "discounted_ucb": "Maintains low queue spillover and high completed throughput across burst phases."
+    }
+  }
+}

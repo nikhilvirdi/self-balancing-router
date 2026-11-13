@@ -1,0 +1,89 @@
+{
+  "id": "scenario_1_homogeneous",
+  "name": "Stable Homogeneous Backends",
+  "description": "Stationary baseline benchmark with five identical backend servers (40ms processing delay, 10ms uniform jitter). Used to evaluate baseline load distribution uniformity, measure routing proxy overhead, and quantify the empirical exploration penalty incurred by Multi-Armed Bandit algorithms when all candidate arms exhibit identical reward distributions.",
+  "duration_seconds": 60.0,
+  "timeline": {
+    "warmup_seconds": 10.0,
+    "measurement_seconds": 45.0,
+    "cooldown_seconds": 5.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 10.0,
+        "target_rps": 50.0
+      },
+      {
+        "start_seconds": 10.0,
+        "duration_seconds": 45.0,
+        "target_rps": 100.0
+      },
+      {
+        "start_seconds": 55.0,
+        "duration_seconds": 5.0,
+        "target_rps": 50.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 105
+    }
+  },
+  "events": [],
+  "evaluation": {
+    "primary_hypothesis": "When backend response time distributions are identical, deterministic Round Robin achieves optimal request balance with zero state tracking overhead. MAB algorithms incur an exploration penalty by actively exploring arms with empirical variance, yielding marginally wider tail latencies.",
+    "target_metrics": [
+      "p50_latency_ms",
+      "p95_latency_ms",
+      "p99_latency_ms",
+      "request_balance_cv",
+      "error_rate",
+      "throughput_rps"
+    ],
+    "policy_expectations": {
+      "round_robin": "Near-perfect uniformity across backends (CV < 0.02), lowest tail latency overhead, and 0% error rate.",
+      "least_requests": "Matches Round Robin closely; minor fluctuations in distribution due to in-flight request race windows.",
+      "p2c": "Slightly higher queue variance than Round Robin due to random sampling, but mean latency matches baseline.",
+      "p2c_peak_ewma": "Tracks P2C performance closely; avoids oscillation.",
+      "ucb1": "Exploration bonus maintains roughly equal sampling across arms, but persistent exploration induces slight variance penalty.",
+      "sliding_window_ucb": "Maintains uniform distribution across arms within window with small exploration variance.",
+      "discounted_ucb": "Behaves similarly to UCB1 under stationary identical conditions with constant discounting."
+    }
+  }
+}

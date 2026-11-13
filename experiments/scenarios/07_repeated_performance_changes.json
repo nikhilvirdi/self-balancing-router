@@ -1,0 +1,130 @@
+{
+  "id": "scenario_7_repeated_performance_changes",
+  "name": "Repeated Performance Changes",
+  "description": "Complex multi-cycle non-stationary benchmark featuring recurring performance degradation and recovery across multiple backends over 150 seconds. Evaluates long-term stability, memory decay, and tracking fidelity of sliding-window and discounted bandit algorithms compared to stationary UCB1.",
+  "duration_seconds": 150.0,
+  "timeline": {
+    "warmup_seconds": 15.0,
+    "measurement_seconds": 125.0,
+    "cooldown_seconds": 10.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 15.0,
+        "target_rps": 35.0
+      },
+      {
+        "start_seconds": 15.0,
+        "duration_seconds": 125.0,
+        "target_rps": 75.0
+      },
+      {
+        "start_seconds": 140.0,
+        "duration_seconds": 10.0,
+        "target_rps": 35.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [
+    {
+      "timestamp_seconds": 30.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "220ms",
+      "processing_jitter": "40ms",
+      "description": "Cycle 1: backend-a degrades from 20ms to 220ms; backend-b becomes optimal arm."
+    },
+    {
+      "timestamp_seconds": 60.0,
+      "target": "backend-a",
+      "action": "reset",
+      "description": "Cycle 1: backend-a recovers to baseline 20ms delay."
+    },
+    {
+      "timestamp_seconds": 85.0,
+      "target": "backend-b",
+      "action": "update",
+      "processing_delay": "250ms",
+      "processing_jitter": "50ms",
+      "description": "Cycle 2: backend-b degrades from 40ms to 250ms."
+    },
+    {
+      "timestamp_seconds": 85.0,
+      "target": "backend-c",
+      "action": "update",
+      "processing_delay": "30ms",
+      "processing_jitter": "5ms",
+      "description": "Cycle 2: backend-c experiences performance acceleration from 80ms to 30ms, becoming second-fastest arm."
+    },
+    {
+      "timestamp_seconds": 115.0,
+      "target": "backend-b",
+      "action": "reset",
+      "description": "Cycle 3: backend-b recovers to baseline 40ms delay."
+    },
+    {
+      "timestamp_seconds": 115.0,
+      "target": "backend-c",
+      "action": "reset",
+      "description": "Cycle 3: backend-c returns to baseline 80ms delay."
+    }
+  ],
+  "evaluation": {
+    "primary_hypothesis": "In long-horizon multi-change environments, standard UCB1 degrades progressively due to unbounded sample accumulation, while Discounted UCB and Sliding-Window UCB maintain invariant tracking agility across repeated cycles.",
+    "target_metrics": [
+      "cycle_adaptation_latency_comparison",
+      "cumulative_regret_growth_rate",
+      "total_503_errors",
+      "mean_latency_over_time"
+    ],
+    "policy_expectations": {
+      "round_robin": "Static distribution throughout; average latency mirrors overall cluster delay fluctuations across all cycles.",
+      "least_requests": "Continually adapts at every cycle without performance loss or memory accumulation.",
+      "p2c": "Avoids currently degraded instances in each cycle via random pairwise probing.",
+      "p2c_peak_ewma": "Maintains fast tracking without becoming locked to old states.",
+      "ucb1": "Exhibits noticeable performance degradation in cycle 2 and 3: adaptation time increases monotonically with total step count t.",
+      "sliding_window_ucb": "Displays consistent adaptation latency across all cycles due to fixed finite window size.",
+      "discounted_ucb": "Maintains uniform agility across all three cycles; optimal MAB policy for repeated non-stationary regimes."
+    }
+  }
+}

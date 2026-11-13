@@ -1,0 +1,305 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/nikhilvirdi/self-balancing-router/experiments/schema.json",
+  "title": "Workload Scenario and Catalog Schema",
+  "description": "JSON schema for validating experimental workload scenarios and scenario catalogs in self-balancing-router.",
+  "oneOf": [
+    { "$ref": "#/$defs/scenario" },
+    { "$ref": "#/$defs/catalog" }
+  ],
+  "$defs": {
+    "duration_string": {
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h)$",
+      "description": "Standard Go duration string (e.g. 20ms, 100ms, 1.5s)."
+    },
+    "backend_id": {
+      "type": "string",
+      "enum": ["backend-a", "backend-b", "backend-c", "backend-d", "backend-e"],
+      "description": "Identifier of a simulated backend instance."
+    },
+    "backend_config": {
+      "type": "object",
+      "required": [
+        "workers",
+        "queue_capacity",
+        "processing_delay",
+        "processing_jitter",
+        "seed"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "workers": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Size of the fixed worker thread pool."
+        },
+        "queue_capacity": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum capacity of the bounded FIFO request queue."
+        },
+        "processing_delay": {
+          "$ref": "#/$defs/duration_string"
+        },
+        "processing_jitter": {
+          "$ref": "#/$defs/duration_string"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "PRNG seed for deterministic latency jitter sampling."
+        }
+      }
+    },
+    "workload_stage": {
+      "type": "object",
+      "required": ["start_seconds", "duration_seconds", "target_rps"],
+      "additionalProperties": false,
+      "properties": {
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Offset in seconds from experiment start when this stage begins."
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0.1,
+          "description": "Duration of this stage in seconds."
+        },
+        "target_rps": {
+          "type": "number",
+          "minimum": 0.1,
+          "description": "Target open-loop request arrival rate in requests per second."
+        }
+      }
+    },
+    "workload_event": {
+      "type": "object",
+      "required": ["timestamp_seconds", "target", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "timestamp_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Timeline offset in seconds at which the administrative event fires."
+        },
+        "target": {
+          "$ref": "#/$defs/backend_id"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["update", "reset"],
+          "description": "Administrative action: 'update' modifies workload delay/jitter; 'reset' restores baseline."
+        },
+        "processing_delay": {
+          "$ref": "#/$defs/duration_string"
+        },
+        "processing_jitter": {
+          "$ref": "#/$defs/duration_string"
+        },
+        "description": {
+          "type": "string",
+          "description": "Explanation of the runtime event and simulated physical condition."
+        }
+      },
+      "if": {
+        "properties": { "action": { "const": "update" } }
+      },
+      "then": {
+        "required": ["processing_delay", "processing_jitter"]
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "description",
+        "duration_seconds",
+        "timeline",
+        "workload",
+        "backends",
+        "events",
+        "evaluation"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$",
+          "description": "Unique machine-readable scenario identifier."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Descriptive title of the benchmark scenario."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Comprehensive explanation of scenario objectives, dynamics, and test conditions."
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 1,
+          "description": "Total duration of the experiment in seconds."
+        },
+        "timeline": {
+          "type": "object",
+          "required": [
+            "warmup_seconds",
+            "measurement_seconds",
+            "cooldown_seconds"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "warmup_seconds": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Duration prior to metric recording for connection warming and state stabilization."
+            },
+            "measurement_seconds": {
+              "type": "number",
+              "minimum": 1,
+              "description": "Active observation window during which benchmark metrics and regret are aggregated."
+            },
+            "cooldown_seconds": {
+              "type": "number",
+              "minimum": 0,
+              "description": "Duration after load generation to drain in-flight requests cleanly."
+            }
+          }
+        },
+        "workload": {
+          "type": "object",
+          "required": ["pattern", "stages"],
+          "additionalProperties": false,
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "enum": ["constant", "stepped", "bursty", "cyclic"],
+              "description": "Classification of the arrival-rate pattern."
+            },
+            "stages": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/workload_stage"
+              }
+            }
+          }
+        },
+        "backends": {
+          "type": "object",
+          "required": [
+            "backend-a",
+            "backend-b",
+            "backend-c",
+            "backend-d",
+            "backend-e"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "backend-a": { "$ref": "#/$defs/backend_config" },
+            "backend-b": { "$ref": "#/$defs/backend_config" },
+            "backend-c": { "$ref": "#/$defs/backend_config" },
+            "backend-d": { "$ref": "#/$defs/backend_config" },
+            "backend-e": { "$ref": "#/$defs/backend_config" }
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/workload_event"
+          }
+        },
+        "evaluation": {
+          "type": "object",
+          "required": [
+            "primary_hypothesis",
+            "target_metrics",
+            "policy_expectations"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "primary_hypothesis": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Scientific hypothesis being evaluated in this scenario."
+            },
+            "target_metrics": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "List of performance, queueing, and regret metrics targeted for comparison."
+            },
+            "policy_expectations": {
+              "type": "object",
+              "required": [
+                "round_robin",
+                "least_requests",
+                "p2c",
+                "p2c_peak_ewma",
+                "ucb1",
+                "sliding_window_ucb",
+                "discounted_ucb"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "round_robin": { "type": "string" },
+                "least_requests": { "type": "string" },
+                "p2c": { "type": "string" },
+                "p2c_peak_ewma": { "type": "string" },
+                "ucb1": { "type": "string" },
+                "sliding_window_ucb": { "type": "string" },
+                "discounted_ucb": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "catalog": {
+      "type": "object",
+      "required": [
+        "version",
+        "catalog_description",
+        "backend_fleet",
+        "scenarios"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Semantic version of the workload scenario catalog."
+        },
+        "catalog_description": {
+          "type": "string",
+          "description": "High-level summary of the scenario catalog."
+        },
+        "backend_fleet": {
+          "type": "object",
+          "required": ["instances", "default_workers", "default_queue_capacity"],
+          "additionalProperties": false,
+          "properties": {
+            "instances": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/backend_id" }
+            },
+            "default_workers": { "type": "integer", "minimum": 1 },
+            "default_queue_capacity": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/scenario"
+          }
+        }
+      }
+    }
+  }
+}

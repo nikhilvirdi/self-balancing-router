@@ -1,0 +1,737 @@
+{
+  "version": "1.0.0",
+  "catalog_description": "Standardized benchmark workload scenario catalog for evaluating traditional load-balancing policies against reinforcement learning Multi-Armed Bandit (MAB) algorithms in self-balancing-router.",
+  "backend_fleet": {
+    "instances": [
+      "backend-a",
+      "backend-b",
+      "backend-c",
+      "backend-d",
+      "backend-e"
+    ],
+    "default_workers": 4,
+    "default_queue_capacity": 32
+  },
+  "scenarios": [
+    {
+      "id": "scenario_1_homogeneous",
+      "name": "Stable Homogeneous Backends",
+      "description": "Stationary baseline benchmark with five identical backend servers (40ms processing delay, 10ms uniform jitter). Used to evaluate baseline load distribution uniformity, measure routing proxy overhead, and quantify the empirical exploration penalty incurred by Multi-Armed Bandit algorithms when all candidate arms exhibit identical reward distributions.",
+      "duration_seconds": 60.0,
+      "timeline": {
+        "warmup_seconds": 10.0,
+        "measurement_seconds": 45.0,
+        "cooldown_seconds": 5.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 10.0,
+            "target_rps": 50.0
+          },
+          {
+            "start_seconds": 10.0,
+            "duration_seconds": 45.0,
+            "target_rps": 100.0
+          },
+          {
+            "start_seconds": 55.0,
+            "duration_seconds": 5.0,
+            "target_rps": 50.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 105
+        }
+      },
+      "events": [],
+      "evaluation": {
+        "primary_hypothesis": "When backend response time distributions are identical, deterministic Round Robin achieves optimal request balance with zero state tracking overhead. MAB algorithms incur an exploration penalty by actively exploring arms with empirical variance, yielding marginally wider tail latencies.",
+        "target_metrics": [
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "p99_latency_ms",
+          "request_balance_cv",
+          "error_rate",
+          "throughput_rps"
+        ],
+        "policy_expectations": {
+          "round_robin": "Near-perfect uniformity across backends (CV < 0.02), lowest tail latency overhead, and 0% error rate.",
+          "least_requests": "Matches Round Robin closely; minor fluctuations in distribution due to in-flight request race windows.",
+          "p2c": "Slightly higher queue variance than Round Robin due to random sampling, but mean latency matches baseline.",
+          "p2c_peak_ewma": "Tracks P2C performance closely; avoids oscillation.",
+          "ucb1": "Exploration bonus maintains roughly equal sampling across arms, but persistent exploration induces slight variance penalty.",
+          "sliding_window_ucb": "Maintains uniform distribution across arms within window with small exploration variance.",
+          "discounted_ucb": "Behaves similarly to UCB1 under stationary identical conditions with constant discounting."
+        }
+      }
+    },
+    {
+      "id": "scenario_2_heterogeneous",
+      "name": "Stable Heterogeneous Backends",
+      "description": "Stationary heterogeneous benchmark with five distinct backend latency tiers (20ms, 40ms, 80ms, 120ms, 180ms). Evaluates the capability of routing algorithms to discover asymmetric backend service rates under steady-state load, allocate traffic preferentially to faster instances, and minimize cumulative regret.",
+      "duration_seconds": 90.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 65.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 40.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 65.0,
+            "target_rps": 80.0
+          },
+          {
+            "start_seconds": 80.0,
+            "duration_seconds": 10.0,
+            "target_rps": 40.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [],
+      "evaluation": {
+        "primary_hypothesis": "Adaptive and bandit policies route disproportionately to fast backends (A and B), achieving significantly lower mean and tail latency compared to Round Robin which routes uniformly regardless of service rates. In stationary settings, UCB1 achieves logarithmic regret O(log T) by converging toward optimal arm A.",
+        "target_metrics": [
+          "mean_latency_ms",
+          "p50_latency_ms",
+          "p95_latency_ms",
+          "p99_latency_ms",
+          "arm_allocation_ratio",
+          "cumulative_regret"
+        ],
+        "policy_expectations": {
+          "round_robin": "Dispatches exactly 20% traffic to each backend; mean latency approaches theoretical uniform average (~88ms); high queue dwell on backend-e.",
+          "least_requests": "Automatically routes ~45-50% to backend-a and ~25% to backend-b based on completion speed, reducing mean latency to ~35ms.",
+          "p2c": "Power of two choices effectively avoids slow arms (backend-d and e), achieving mean latency near ~35ms with minimal coordination.",
+          "p2c_peak_ewma": "Maintains low queueing pressure with EWMA dampening; minimizes tail latency spikes.",
+          "ucb1": "Rapidly exploits backend-a as dominant arm; arm pulls decay logarithmically for backend-e; cumulative regret follows O(log T).",
+          "sliding_window_ucb": "Focuses heavily on backend-a while maintaining finite-window exploratory pulls.",
+          "discounted_ucb": "Concentrates allocation on fast arms; matches UCB1 performance in stationary environment."
+        }
+      }
+    },
+    {
+      "id": "scenario_3_sudden_degradation",
+      "name": "Sudden Backend Degradation",
+      "description": "Non-stationary benchmark where the fastest backend (backend-a, initially 20ms delay) experiences a sudden 15x latency degradation to 300ms at t=40s under steady 80 RPS load. Evaluates dynamic detection latency, queue overload prevention, and sticky-arm regret in Multi-Armed Bandit policies.",
+      "duration_seconds": 90.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 65.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 40.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 65.0,
+            "target_rps": 80.0
+          },
+          {
+            "start_seconds": 80.0,
+            "duration_seconds": 10.0,
+            "target_rps": 40.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [
+        {
+          "timestamp_seconds": 40.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "300ms",
+          "processing_jitter": "50ms",
+          "description": "Sudden 15x latency degradation on backend-a from 20ms to 300ms, collapsing service capacity from 200 rps to 13.3 rps."
+        }
+      ],
+      "evaluation": {
+        "primary_hypothesis": "Standard UCB1 will suffer severe sticky-arm pathology due to historical sample inertia, causing queue overflow (HTTP 503 errors) on backend-a, while sliding-window and discounted MAB algorithms adapt rapidly to the non-stationary change.",
+        "target_metrics": [
+          "adaptation_time_seconds",
+          "p99_latency_ms",
+          "post_degradation_503_count",
+          "cumulative_regret_step_increase"
+        ],
+        "policy_expectations": {
+          "round_robin": "Continues sending 20% of traffic to backend-a; backend-a queue overflows rapidly resulting in high HTTP 503 error rates.",
+          "least_requests": "Instantly detects in-flight queue accumulation on backend-a and diverts subsequent requests to backend-b and c within tens of milliseconds.",
+          "p2c": "Quickly avoids backend-a once its in-flight count surges; protects cluster from queue drops.",
+          "p2c_peak_ewma": "Reacts swiftly; peak latency memory prevents premature re-selection of backend-a.",
+          "ucb1": "Fails to adapt quickly: hundreds of historical 20ms rewards anchor backend-a's empirical mean, keeping it preferred for several seconds until enough 300ms samples accumulate.",
+          "sliding_window_ucb": "Evicts pre-degradation samples as window slides, restoring optimal allocation to backend-b significantly faster than UCB1.",
+          "discounted_ucb": "Exponentially discounts old observations, rapidly adapting routing weights without severe queue spill."
+        }
+      }
+    },
+    {
+      "id": "scenario_4_gradual_degradation",
+      "name": "Gradual Backend Degradation",
+      "description": "Multi-phase non-stationary benchmark where backend-a undergoes progressive performance deterioration in 3 discrete steps (20ms -> 60ms -> 110ms -> 200ms), descending from the fastest instance in the cluster to the slowest. Evaluates how routing policies handle shifting rank orders over extended operational periods.",
+      "duration_seconds": 120.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 95.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 35.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 95.0,
+            "target_rps": 70.0
+          },
+          {
+            "start_seconds": 110.0,
+            "duration_seconds": 10.0,
+            "target_rps": 35.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [
+        {
+          "timestamp_seconds": 30.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "60ms",
+          "processing_jitter": "15ms",
+          "description": "Phase 1 degradation: backend-a delay increases from 20ms to 60ms, falling behind backend-b (40ms)."
+        },
+        {
+          "timestamp_seconds": 60.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "110ms",
+          "processing_jitter": "25ms",
+          "description": "Phase 2 degradation: backend-a delay increases from 60ms to 110ms, falling behind backend-c (80ms)."
+        },
+        {
+          "timestamp_seconds": 85.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "200ms",
+          "processing_jitter": "40ms",
+          "description": "Phase 3 degradation: backend-a delay increases from 110ms to 200ms, becoming the slowest backend in the fleet."
+        }
+      ],
+      "evaluation": {
+        "primary_hypothesis": "Routing policies must continuously down-weight backend-a as its performance ranking degrades. Standard UCB1 displays severe hysteresis at each phase boundary, whereas Least Requests and Discounted UCB smoothly track the shifting optimum.",
+        "target_metrics": [
+          "rank_transition_latency",
+          "mean_latency_by_phase",
+          "queue_dwell_variance",
+          "cumulative_regret"
+        ],
+        "policy_expectations": {
+          "round_robin": "Uniform allocation throughout; overall mean latency increases linearly with each degradation step.",
+          "least_requests": "Dynamically rebalances traffic proportions across backends at each threshold proportional to Little's Law.",
+          "p2c": "Seamlessly shifts preference to the new best options as in-flight counts adjust.",
+          "p2c_peak_ewma": "Tracks latency shifts smoothly without sudden oscillatory swings.",
+          "ucb1": "Experiences increasing inertia across successive degradation steps as total historical pull count N_a grows.",
+          "sliding_window_ucb": "Maintains bounded memory horizon, tracking ranking transitions with uniform delay across all phases.",
+          "discounted_ucb": "Continuous exponential forgetting ensures constant adaptation speed at each degradation step."
+        }
+      }
+    },
+    {
+      "id": "scenario_5_backend_recovery",
+      "name": "Backend Degradation and Recovery",
+      "description": "Non-stationary benchmark testing both degradation avoidance and recovery re-exploration: backend-a degrades at t=30s (20ms -> 250ms) and recovers to baseline at t=65s (20ms). Measures the recovery discovery time, exploration efficiency, and traffic restoration rate.",
+      "duration_seconds": 100.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 75.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 40.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 75.0,
+            "target_rps": 80.0
+          },
+          {
+            "start_seconds": 90.0,
+            "duration_seconds": 10.0,
+            "target_rps": 40.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [
+        {
+          "timestamp_seconds": 30.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "250ms",
+          "processing_jitter": "50ms",
+          "description": "backend-a degrades from 20ms to 250ms, triggering traffic diversion."
+        },
+        {
+          "timestamp_seconds": 65.0,
+          "target": "backend-a",
+          "action": "reset",
+          "description": "backend-a recovers to baseline 20ms delay and 5ms jitter, requiring policies to re-discover its capacity."
+        }
+      ],
+      "evaluation": {
+        "primary_hypothesis": "Algorithms requiring active exploration (MABs) discover recovered backends via expanding confidence intervals, whereas greedy heuristics risk under-utilizing recovered instances until queue states clear.",
+        "target_metrics": [
+          "recovery_detection_time_seconds",
+          "traffic_restoration_slope",
+          "post_recovery_mean_latency",
+          "cumulative_regret"
+        ],
+        "policy_expectations": {
+          "round_robin": "Allocates constant 20% throughout; reaps recovery benefits immediately without discovery lag.",
+          "least_requests": "Instantly routes new requests to backend-a as soon as its active in-flight count drops to 0.",
+          "p2c": "Quickly re-incorporates backend-a into high-frequency selection as samples draw low in-flight counts.",
+          "p2c_peak_ewma": "Probes backend-a as its peak EWMA latency decays over time, restoring optimal routing.",
+          "ucb1": "Exploration bonus on starved backend-a grows monotonically until triggering exploratory pulls that detect recovery.",
+          "sliding_window_ucb": "Swiftly flushes degraded samples upon recovery and re-establishes dominant allocation.",
+          "discounted_ucb": "Quickly incorporates high rewards from fresh 20ms responses, ramping traffic back up within seconds."
+        }
+      }
+    },
+    {
+      "id": "scenario_6_traffic_bursts",
+      "name": "Traffic Bursts and Congestion",
+      "description": "Dynamic workload scenario subjecting heterogeneous backends to transient high-volume arrival bursts (surging from 50 RPS up to 160 RPS and 200 RPS). At 160+ RPS, uniform routing exceeds the capacity of slower backends (backend-d and e), inducing severe queueing and HTTP 503 rejections, while load-aware and bandit policies absorb the surge using high-capacity backends (backend-a and b).",
+      "duration_seconds": 90.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 65.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "bursty",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 50.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 15.0,
+            "target_rps": 50.0
+          },
+          {
+            "start_seconds": 30.0,
+            "duration_seconds": 15.0,
+            "target_rps": 160.0
+          },
+          {
+            "start_seconds": 45.0,
+            "duration_seconds": 15.0,
+            "target_rps": 50.0
+          },
+          {
+            "start_seconds": 60.0,
+            "duration_seconds": 15.0,
+            "target_rps": 200.0
+          },
+          {
+            "start_seconds": 75.0,
+            "duration_seconds": 15.0,
+            "target_rps": 50.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [],
+      "evaluation": {
+        "primary_hypothesis": "Round Robin causes massive HTTP 503 rejection spikes during bursts because it overflows slow backends (D and E), whereas concurrency-aware and bandit policies steer surges toward fast backends (A and B), preserving cluster throughput.",
+        "target_metrics": [
+          "burst_error_rate_503",
+          "peak_queue_dwell_ms",
+          "throughput_preservation_ratio",
+          "p99_latency_during_burst"
+        ],
+        "policy_expectations": {
+          "round_robin": "Saturates backend-d and e queues within seconds of burst start; exhibits high 503 error rates (>15%) during both bursts.",
+          "least_requests": "Dynamically spills burst requests to the highest throughput backends (A and B), maintaining zero or near-zero 503 errors.",
+          "p2c": "Effectively diverts bursts away from backends with growing queue depths, achieving high resilience.",
+          "p2c_peak_ewma": "Absorbs surge without destabilizing queue distributions; dampens queue oscillation.",
+          "ucb1": "Heavy preference for backend-a keeps rejection rates low, though exploratory pulls may drop occasional requests into saturated slow queues.",
+          "sliding_window_ucb": "Robust during bursts, concentrating allocation on high-rate arms.",
+          "discounted_ucb": "Maintains low queue spillover and high completed throughput across burst phases."
+        }
+      }
+    },
+    {
+      "id": "scenario_7_repeated_performance_changes",
+      "name": "Repeated Performance Changes",
+      "description": "Complex multi-cycle non-stationary benchmark featuring recurring performance degradation and recovery across multiple backends over 150 seconds. Evaluates long-term stability, memory decay, and tracking fidelity of sliding-window and discounted bandit algorithms compared to stationary UCB1.",
+      "duration_seconds": 150.0,
+      "timeline": {
+        "warmup_seconds": 15.0,
+        "measurement_seconds": 125.0,
+        "cooldown_seconds": 10.0
+      },
+      "workload": {
+        "pattern": "constant",
+        "stages": [
+          {
+            "start_seconds": 0.0,
+            "duration_seconds": 15.0,
+            "target_rps": 35.0
+          },
+          {
+            "start_seconds": 15.0,
+            "duration_seconds": 125.0,
+            "target_rps": 75.0
+          },
+          {
+            "start_seconds": 140.0,
+            "duration_seconds": 10.0,
+            "target_rps": 35.0
+          }
+        ]
+      },
+      "backends": {
+        "backend-a": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "20ms",
+          "processing_jitter": "5ms",
+          "seed": 101
+        },
+        "backend-b": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "40ms",
+          "processing_jitter": "10ms",
+          "seed": 102
+        },
+        "backend-c": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "80ms",
+          "processing_jitter": "20ms",
+          "seed": 103
+        },
+        "backend-d": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "120ms",
+          "processing_jitter": "30ms",
+          "seed": 104
+        },
+        "backend-e": {
+          "workers": 4,
+          "queue_capacity": 32,
+          "processing_delay": "180ms",
+          "processing_jitter": "40ms",
+          "seed": 105
+        }
+      },
+      "events": [
+        {
+          "timestamp_seconds": 30.0,
+          "target": "backend-a",
+          "action": "update",
+          "processing_delay": "220ms",
+          "processing_jitter": "40ms",
+          "description": "Cycle 1: backend-a degrades from 20ms to 220ms; backend-b becomes optimal arm."
+        },
+        {
+          "timestamp_seconds": 60.0,
+          "target": "backend-a",
+          "action": "reset",
+          "description": "Cycle 1: backend-a recovers to baseline 20ms delay."
+        },
+        {
+          "timestamp_seconds": 85.0,
+          "target": "backend-b",
+          "action": "update",
+          "processing_delay": "250ms",
+          "processing_jitter": "50ms",
+          "description": "Cycle 2: backend-b degrades from 40ms to 250ms."
+        },
+        {
+          "timestamp_seconds": 85.0,
+          "target": "backend-c",
+          "action": "update",
+          "processing_delay": "30ms",
+          "processing_jitter": "5ms",
+          "description": "Cycle 2: backend-c experiences performance acceleration from 80ms to 30ms, becoming second-fastest arm."
+        },
+        {
+          "timestamp_seconds": 115.0,
+          "target": "backend-b",
+          "action": "reset",
+          "description": "Cycle 3: backend-b recovers to baseline 40ms delay."
+        },
+        {
+          "timestamp_seconds": 115.0,
+          "target": "backend-c",
+          "action": "reset",
+          "description": "Cycle 3: backend-c returns to baseline 80ms delay."
+        }
+      ],
+      "evaluation": {
+        "primary_hypothesis": "In long-horizon multi-change environments, standard UCB1 degrades progressively due to unbounded sample accumulation, while Discounted UCB and Sliding-Window UCB maintain invariant tracking agility across repeated cycles.",
+        "target_metrics": [
+          "cycle_adaptation_latency_comparison",
+          "cumulative_regret_growth_rate",
+          "total_503_errors",
+          "mean_latency_over_time"
+        ],
+        "policy_expectations": {
+          "round_robin": "Static distribution throughout; average latency mirrors overall cluster delay fluctuations across all cycles.",
+          "least_requests": "Continually adapts at every cycle without performance loss or memory accumulation.",
+          "p2c": "Avoids currently degraded instances in each cycle via random pairwise probing.",
+          "p2c_peak_ewma": "Maintains fast tracking without becoming locked to old states.",
+          "ucb1": "Exhibits noticeable performance degradation in cycle 2 and 3: adaptation time increases monotonically with total step count t.",
+          "sliding_window_ucb": "Displays consistent adaptation latency across all cycles due to fixed finite window size.",
+          "discounted_ucb": "Maintains uniform agility across all three cycles; optimal MAB policy for repeated non-stationary regimes."
+        }
+      }
+    }
+  ]
+}
