@@ -96,7 +96,7 @@ func TestObservationUpstreamStatus(t *testing.T) {
 }
 
 func TestObservationGatewayFailures(t *testing.T) {
-	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests} {
+	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests, config.PolicyP2C} {
 		t.Run(string(policy), func(t *testing.T) { testObservationGatewayFailures(t, policy) })
 	}
 }
@@ -435,7 +435,7 @@ func observedHandler(t *testing.T, registry *Registry, policyName config.ProxyPo
 	t.Helper()
 	backends := registry.Snapshot()
 	tracker := newRequestTracker(backends)
-	policy, err := newRoutingPolicy(policyName, tracker)
+	policy, err := newRoutingPolicy(policyName, tracker, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

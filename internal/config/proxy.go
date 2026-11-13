@@ -14,6 +14,7 @@ const (
 	PolicyFirstEligible ProxyPolicy = "first-eligible"
 	PolicyRoundRobin    ProxyPolicy = "round-robin"
 	PolicyLeastRequests ProxyPolicy = "least-requests"
+	PolicyP2C           ProxyPolicy = "p2c"
 )
 
 type ProxyConfig struct {
@@ -25,6 +26,7 @@ type ProxyConfig struct {
 	Backends              []BackendConfig
 	HealthCheck           HealthCheckConfig
 	Policy                ProxyPolicy
+	P2CSeed               int64
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -39,15 +41,23 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		DialTimeout:           3 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		Policy:                PolicyFirstEligible,
+		P2CSeed:               1,
 	}
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C)
 		}
+	}
+	if value, ok := lookupEnv("SBR_PROXY_P2C_SEED"); ok {
+		seed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_P2C_SEED %q: expected a signed 64-bit integer", value)
+		}
+		cfg.P2CSeed = seed
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,13 @@ import (
 )
 
 func TestConfiguredPolicies(t *testing.T) {
+	const seed = 42
+	rng := rand.New(rand.NewPCG(seed, 0))
+	p2c := make([]string, 3)
+	for i := range p2c {
+		first, _ := referenceP2CPair(rng, 2)
+		p2c[i] = fmt.Sprintf("backend-%c", 'a'+first)
+	}
 	for _, tt := range []struct {
 		name  string
 		value string
@@ -24,6 +32,7 @@ func TestConfiguredPolicies(t *testing.T) {
 		{"explicit first eligible", "first-eligible", []string{"backend-a", "backend-a", "backend-a"}},
 		{"round robin", "round-robin", []string{"backend-a", "backend-b", "backend-a"}},
 		{"least requests", "least-requests", []string{"backend-a", "backend-a", "backend-a"}},
+		{"p2c", "p2c", p2c},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			urls := identityBackends(t, 2)
@@ -34,6 +43,9 @@ func TestConfiguredPolicies(t *testing.T) {
 			}
 			if tt.value != "" {
 				values["SBR_PROXY_POLICY"] = tt.value
+			}
+			if tt.value == "p2c" {
+				values["SBR_PROXY_P2C_SEED"] = fmt.Sprint(seed)
 			}
 			cfg, err := config.LoadProxy(func(key string) (string, bool) {
 				value, ok := values[key]
@@ -63,7 +75,7 @@ func TestConfiguredPolicies(t *testing.T) {
 			t.Cleanup(client.CloseIdleConnections)
 			for i, want := range tt.want {
 				if i == 1 {
-					assertPolicyResponse(t, client, start(), "backend-a")
+					assertPolicyResponse(t, client, start(), tt.want[0])
 				}
 				assertPolicyResponse(t, client, first, want)
 			}
@@ -135,6 +147,10 @@ func TestLeastRequestsConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicyLeastRequests, 103)
 }
 
+func TestP2CConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyP2C, 103)
+}
+
 func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, total int) {
 	t.Helper()
 	const count = 5
@@ -163,11 +179,27 @@ func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, tot
 	for range total {
 		started[waitFor(t, entered)]++
 	}
-	for i, candidate := range registry.Snapshot() {
-		want := total / count
-		if i < total%count {
-			want++
+	expected := make([]int, count)
+	if policy == config.PolicyP2C {
+		// No requests complete until the barrier is released, so replay the seeded assignments.
+		rng := rand.New(rand.NewPCG(1, 0))
+		for range total {
+			i, j := referenceP2CPair(rng, count)
+			if expected[j] < expected[i] {
+				i = j
+			}
+			expected[i]++
 		}
+	} else {
+		for i := range expected {
+			expected[i] = total / count
+			if i < total%count {
+				expected[i]++
+			}
+		}
+	}
+	for i, candidate := range registry.Snapshot() {
+		want := expected[i]
 		if got := started[candidate.ID]; got != want {
 			t.Errorf("requests to %s = %d, want %d", candidate.ID, got, want)
 		}
@@ -236,6 +268,15 @@ func TestRoundRobinFailureAndCancellationFeedback(t *testing.T) {
 }
 
 func TestLeastRequestsEligibilityAndFeedback(t *testing.T) {
+	testLoadAwareEligibilityAndFeedback(t, config.PolicyLeastRequests)
+}
+
+func TestP2CEligibilityAndFeedback(t *testing.T) {
+	testLoadAwareEligibilityAndFeedback(t, config.PolicyP2C)
+}
+
+func testLoadAwareEligibilityAndFeedback(t *testing.T, policy config.ProxyPolicy) {
+	t.Helper()
 	entered := make(chan struct{})
 	secondEntered, finishSecond := make(chan struct{}), make(chan struct{})
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -260,14 +301,17 @@ func TestLeastRequestsEligibilityAndFeedback(t *testing.T) {
 		http.Error(w, "backend overloaded", http.StatusServiceUnavailable)
 	}))
 	t.Cleanup(second.Close)
-	registry, tracker, proxy, observations := startObservedPolicyProxy(t, config.PolicyLeastRequests, 8, first.URL, second.URL)
+	registry, tracker, proxy, observations := startObservedPolicyProxy(t, policy, 8, first.URL, second.URL)
+	setHealth(t, registry, "backend-b", Unhealthy)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	pending := startObservedRequest(t, ctx, proxy, "/hold")
 	waitFor(t, entered)
 	assertInFlight(t, tracker, "backend-a", 1)
+	setHealth(t, registry, "backend-b", Unknown)
 
-	_, independent, other, otherObservations := startObservedPolicyProxy(t, config.PolicyLeastRequests, 2, first.URL, second.URL)
+	otherRegistry, independent, other, otherObservations := startObservedPolicyProxy(t, policy, 2, first.URL, second.URL)
+	setHealth(t, otherRegistry, "backend-b", Unhealthy)
 	assertResponse(t, other, http.MethodGet, "/items", 200, "backend-a")
 	assertObservation(t, otherObservations, "backend-a", 200, UpstreamResponse)
 	assertInFlight(t, independent, "backend-a", 0)
@@ -310,6 +354,9 @@ func TestLeastRequestsEligibilityAndFeedback(t *testing.T) {
 	assertObservation(t, observations, "backend-a", 0, Canceled)
 	assertInFlight(t, tracker, "backend-a", 0)
 	assertHealth(t, registry, "backend-a", Unhealthy)
+	if policy == config.PolicyP2C {
+		setHealth(t, registry, "backend-b", Unhealthy)
+	}
 	setHealth(t, registry, "backend-a", Healthy)
 	assertResponse(t, proxy, http.MethodGet, "/items", 200, "backend-a")
 	assertObservation(t, observations, "backend-a", 200, UpstreamResponse)
