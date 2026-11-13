@@ -39,10 +39,14 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 
 	// Publish each reservation before the next selection reads the tracker.
 	var assignmentMu sync.Mutex
-	assign := func(candidates []Backend) (*httputil.ReverseProxy, int, Observation, string) {
+	assign := func() (*httputil.ReverseProxy, int, Observation, string) {
 		assignmentMu.Lock()
 		defer assignmentMu.Unlock()
 
+		candidates := registry.Eligible()
+		if len(candidates) == 0 {
+			return nil, 0, Observation{}, ""
+		}
 		backend, selected := policy.Select(candidates)
 		observation := Observation{BackendID: backend.ID}
 		if !selected || !slices.Contains(candidates, backend) {
@@ -68,15 +72,14 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 			mux.ServeHTTP(w, r)
 			return
 		}
-		candidates := registry.Eligible()
-		if len(candidates) == 0 {
-			routingUnavailable(w)
-			return
-		}
-		upstream, index, observation, failure := assign(candidates)
+		upstream, index, observation, failure := assign()
 		if failure != "" {
 			logger.Error(failure, "backend_id", observation.BackendID)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if upstream == nil {
+			routingUnavailable(w)
 			return
 		}
 		forwardTracked(w, r, upstream, tracker, index, observation, observer, logger)

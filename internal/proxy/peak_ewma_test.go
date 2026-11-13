@@ -127,6 +127,7 @@ func TestPeakEWMADegradationAndRecovery(t *testing.T) {
 	registry := newTestRegistry(t, "a", "b")
 	now := time.Unix(100, 0)
 	p := testPeakEWMAPolicy(registry.Snapshot(), now)
+	independent := testPeakEWMAPolicy(registry.Snapshot(), now)
 	check := func(at time.Time, id string) {
 		t.Helper()
 		if got, ok := p.selectAt(registry.Eligible(), at); !ok || got.ID != id {
@@ -139,6 +140,9 @@ func TestPeakEWMADegradationAndRecovery(t *testing.T) {
 	now = now.Add(time.Second)
 	p.observe(successfulSample("a", now, 50*time.Millisecond))
 	check(now, "b")
+	if got := independent.score("a", 0, now); got != float64(independent.initialRTT) {
+		t.Fatalf("separate policy estimate = %g ns, want %s", got, independent.initialRTT)
+	}
 	setHealth(t, registry, "b", Unhealthy)
 	check(now, "a")
 	setHealth(t, registry, "b", Healthy)

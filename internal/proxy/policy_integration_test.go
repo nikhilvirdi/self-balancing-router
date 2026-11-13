@@ -100,6 +100,56 @@ func assertPolicyResponse(t *testing.T, client *http.Client, url, want string) {
 	}
 }
 
+func TestPoliciesUseEligibleBackends(t *testing.T) {
+	const count = 5
+	urls := identityBackends(t, count)
+	for _, policy := range traditionalPolicies {
+		t.Run(string(policy), func(t *testing.T) {
+			registry, tracker, server, observations := startObservedPolicyProxy(t, policy, 1, urls...)
+			backends := registry.Snapshot()
+			for _, eligible := range [][]int{{0, 1, 2, 3, 4}, {1, 2, 4}, {4}, {}, {0, 2, 3}} {
+				allowed := make(map[string]bool, len(eligible))
+				for _, i := range eligible {
+					allowed[backends[i].ID] = true
+				}
+				for _, backend := range backends {
+					state := Unhealthy
+					if allowed[backend.ID] {
+						state = Healthy
+					}
+					setHealth(t, registry, backend.ID, state)
+				}
+				if len(eligible) == 0 {
+					assertResponse(t, server, http.MethodGet, "/items", 503, "request routing is unavailable\n")
+					assertResponse(t, server, http.MethodGet, "/readyz", 503, "request routing is unavailable\n")
+				} else {
+					assertResponse(t, server, http.MethodGet, "/readyz", 200, "ok\n")
+					for range 2 * len(eligible) {
+						req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/items", nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						response, id := doRequest(t, server.Client(), req)
+						if response.StatusCode != http.StatusOK || !allowed[id] {
+							t.Fatalf("response = %d %q, want eligible backend from %v", response.StatusCode, id, allowed)
+						}
+						assertObservation(t, observations, id, http.StatusOK, UpstreamResponse)
+					}
+				}
+				assertNoObservation(t, observations)
+				for _, backend := range backends {
+					assertInFlight(t, tracker, backend.ID, 0)
+				}
+			}
+		})
+	}
+}
+
+var traditionalPolicies = []config.ProxyPolicy{
+	config.PolicyFirstEligible, config.PolicyRoundRobin, config.PolicyLeastRequests,
+	config.PolicyP2C, config.PolicyP2CPeakEWMA,
+}
+
 func TestRoundRobinForwarding(t *testing.T) {
 	const count = 5
 	registry, tracker, proxy, observations := startObservedPolicyProxy(t, config.PolicyRoundRobin, 16, identityBackends(t, count)...)
@@ -144,6 +194,10 @@ func TestRoundRobinConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicyRoundRobin, 20)
 }
 
+func TestFirstEligibleConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyFirstEligible, 20)
+}
+
 func TestLeastRequestsConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicyLeastRequests, 103)
 }
@@ -185,7 +239,10 @@ func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, tot
 		started[waitFor(t, entered)]++
 	}
 	expected := make([]int, count)
-	if policy == config.PolicyP2C || policy == config.PolicyP2CPeakEWMA {
+	switch policy {
+	case config.PolicyFirstEligible:
+		expected[0] = total
+	case config.PolicyP2C, config.PolicyP2CPeakEWMA:
 		// No requests complete until the barrier is released, so replay the seeded assignments.
 		rng := rand.New(rand.NewPCG(1, 0))
 		for range total {
@@ -195,7 +252,7 @@ func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, tot
 			}
 			expected[i]++
 		}
-	} else {
+	default:
 		for i := range expected {
 			expected[i] = total / count
 			if i < total%count {

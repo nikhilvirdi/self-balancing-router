@@ -96,7 +96,7 @@ func TestObservationUpstreamStatus(t *testing.T) {
 }
 
 func TestObservationGatewayFailures(t *testing.T) {
-	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests, config.PolicyP2C, config.PolicyP2CPeakEWMA} {
+	for _, policy := range traditionalPolicies {
 		t.Run(string(policy), func(t *testing.T) { testObservationGatewayFailures(t, policy) })
 	}
 }
@@ -353,6 +353,13 @@ func TestMissingUpstreamHandler(t *testing.T) {
 }
 
 func TestObservationDraining(t *testing.T) {
+	for _, policy := range traditionalPolicies {
+		t.Run(string(policy), func(t *testing.T) { testObservationDraining(t, policy) })
+	}
+}
+
+func testObservationDraining(t *testing.T, policy config.ProxyPolicy) {
+	t.Helper()
 	entered, release := make(chan struct{}), make(chan struct{})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		close(entered)
@@ -365,7 +372,7 @@ func TestObservationDraining(t *testing.T) {
 	t.Cleanup(backend.Close)
 	registry := healthRegistry(t, backend.URL)
 	observations := make(chan Observation, 4)
-	tracker, handle := observedHandler(t, registry, config.PolicyFirstEligible, testTimeout, func(o Observation) { observations <- o })
+	tracker, handle := observedHandler(t, registry, policy, testTimeout, func(o Observation) { observations <- o })
 	listener := &observedListener{Listener: listenLoopback(t), closed: make(chan struct{})}
 	stop, done, request := startRequest(t, listener, &http.Server{Handler: handle}, testTimeout)
 	waitFor(t, entered)
