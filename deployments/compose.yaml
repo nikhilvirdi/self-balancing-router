@@ -7,6 +7,12 @@ services:
       context: ..
       dockerfile: deployments/Dockerfile.proxy
     read_only: true
+    ports:
+      - "127.0.0.1:8080:8080"
+    stop_grace_period: 20s
+    networks:
+      - default
+      - ingress
 
   backend-a: &backend
     image: self-balancing-router/backend
@@ -22,3 +28,4 @@ services:
 networks:
   default:
     internal: true
+  ingress: {}

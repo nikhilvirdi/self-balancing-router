@@ -20,3 +20,5 @@ coverage.out
 /.vscode/
 *.swp
 /.local-notes/
+/AGENTS.md
+/.local-notes/
