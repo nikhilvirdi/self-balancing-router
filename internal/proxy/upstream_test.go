@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 )
@@ -154,7 +155,7 @@ func TestProxyEmptyRegistry(t *testing.T) {
 }
 
 func TestProxyUpstreamApplicationErrors(t *testing.T) {
-	for _, status := range []int{400, 404, 429, 500} {
+	for _, status := range []int{400, 404, 429, 500, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(status)
@@ -301,12 +302,16 @@ func startTestProxy(t *testing.T, backends ...config.BackendConfig) (*Registry, 
 
 func testProxyHandler(t *testing.T, logger *slog.Logger, backends ...config.BackendConfig) (*Registry, http.Handler) {
 	t.Helper()
+	return testProxyWithTransport(t, newTransport(3*time.Second, 30*time.Second), logger, backends...)
+}
+
+func testProxyWithTransport(t *testing.T, transport *http.Transport, logger *slog.Logger, backends ...config.BackendConfig) (*Registry, http.Handler) {
+	t.Helper()
+	t.Cleanup(transport.CloseIdleConnections)
 	registry, err := NewRegistry(backends)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transport := newTransport()
-	t.Cleanup(transport.CloseIdleConnections)
 	upstreams, err := newUpstreams(registry.Snapshot(), transport, logger)
 	if err != nil {
 		t.Fatal(err)

@@ -19,7 +19,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 	backends := registry.Snapshot()
 	logger.Info("backend registry initialized", "backend_count", len(backends))
-	transport := newTransport()
+	transport := newTransport(cfg.DialTimeout, cfg.ResponseHeaderTimeout)
 	defer transport.CloseIdleConnections()
 	upstreams, err := newUpstreams(backends, transport, logger)
 	if err != nil {
