@@ -7,7 +7,7 @@ services:
       context: ..
       dockerfile: deployments/Dockerfile.proxy
     environment:
-      SBR_PROXY_BACKENDS: "backend-a=http://backend-a:8080,backend-b=http://backend-b:8080,backend-c=http://backend-c:8080"
+      SBR_PROXY_BACKENDS: "backend-a=http://backend-a:8080,backend-b=http://backend-b:8080,backend-c=http://backend-c:8080,backend-d=http://backend-d:8080,backend-e=http://backend-e:8080"
     read_only: true
     ports:
       - "127.0.0.1:8080:8080"
@@ -22,10 +22,24 @@ services:
       context: ..
       dockerfile: deployments/Dockerfile.backend
     read_only: true
+    environment:
+      SBR_BACKEND_ID: backend-a
   backend-b:
     <<: *backend
+    environment:
+      SBR_BACKEND_ID: backend-b
   backend-c:
     <<: *backend
+    environment:
+      SBR_BACKEND_ID: backend-c
+  backend-d:
+    <<: *backend
+    environment:
+      SBR_BACKEND_ID: backend-d
+  backend-e:
+    <<: *backend
+    environment:
+      SBR_BACKEND_ID: backend-e
 
 networks:
   default:
