@@ -15,6 +15,7 @@ const (
 	PolicyRoundRobin    ProxyPolicy = "round-robin"
 	PolicyLeastRequests ProxyPolicy = "least-requests"
 	PolicyP2C           ProxyPolicy = "p2c"
+	PolicyP2CPeakEWMA   ProxyPolicy = "p2c-peak-ewma"
 )
 
 type ProxyConfig struct {
@@ -27,6 +28,8 @@ type ProxyConfig struct {
 	HealthCheck           HealthCheckConfig
 	Policy                ProxyPolicy
 	P2CSeed               int64
+	PeakEWMADecay         time.Duration
+	PeakEWMAInitialRTT    time.Duration
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -42,14 +45,16 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		ResponseHeaderTimeout: 30 * time.Second,
 		Policy:                PolicyFirstEligible,
 		P2CSeed:               1,
+		PeakEWMADecay:         10 * time.Second,
+		PeakEWMAInitialRTT:    10 * time.Millisecond,
 	}
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA)
 		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_P2C_SEED"); ok {
@@ -58,6 +63,22 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_P2C_SEED %q: expected a signed 64-bit integer", value)
 		}
 		cfg.P2CSeed = seed
+	}
+	for _, setting := range []struct {
+		key     string
+		target  *time.Duration
+		maximum time.Duration
+	}{
+		{"SBR_PROXY_PEAK_EWMA_DECAY", &cfg.PeakEWMADecay, 24 * time.Hour},
+		{"SBR_PROXY_PEAK_EWMA_INITIAL_RTT", &cfg.PeakEWMAInitialRTT, time.Hour},
+	} {
+		if value, ok := lookupEnv(setting.key); ok {
+			duration, err := time.ParseDuration(value)
+			if err != nil || duration <= 0 || duration > setting.maximum {
+				return ProxyConfig{}, fmt.Errorf("invalid %s %q: expected a positive Go duration no greater than %s", setting.key, value, setting.maximum)
+			}
+			*setting.target = duration
+		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

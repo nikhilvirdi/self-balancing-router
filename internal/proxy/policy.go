@@ -5,6 +5,7 @@ import (
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 )
@@ -14,8 +15,8 @@ type routingPolicy interface {
 	Select(candidates []Backend) (Backend, bool)
 }
 
-func newRoutingPolicy(name config.ProxyPolicy, tracker *requestTracker, p2cSeed int64) (routingPolicy, error) {
-	switch name {
+func newRoutingPolicy(cfg config.ProxyConfig, tracker *requestTracker) (routingPolicy, error) {
+	switch cfg.Policy {
 	case config.PolicyFirstEligible:
 		return firstEligiblePolicy{}, nil
 	case config.PolicyRoundRobin:
@@ -24,11 +25,16 @@ func newRoutingPolicy(name config.ProxyPolicy, tracker *requestTracker, p2cSeed 
 		return leastRequestsPolicy{tracker: tracker}, nil
 	case config.PolicyP2C:
 		return &p2cPolicy{
-			tracker: tracker,
-			rng:     rand.New(rand.NewPCG(uint64(p2cSeed), 0)),
+			tracker:    tracker,
+			p2cSampler: newP2CSampler(cfg.P2CSeed),
 		}, nil
+	case config.PolicyP2CPeakEWMA:
+		if cfg.PeakEWMADecay <= 0 || cfg.PeakEWMAInitialRTT <= 0 {
+			return nil, fmt.Errorf("peak EWMA decay and initial RTT must be positive")
+		}
+		return newPeakEWMAPolicy(cfg, tracker, time.Now()), nil
 	default:
-		return nil, fmt.Errorf("unsupported routing policy %q", name)
+		return nil, fmt.Errorf("unsupported routing policy %q", cfg.Policy)
 	}
 }
 
@@ -81,8 +87,7 @@ func (p leastRequestsPolicy) Select(candidates []Backend) (Backend, bool) {
 
 type p2cPolicy struct {
 	tracker *requestTracker
-	mu      sync.Mutex
-	rng     *rand.Rand
+	*p2cSampler
 }
 
 func (p *p2cPolicy) Select(candidates []Backend) (Backend, bool) {
@@ -105,10 +110,19 @@ func (p *p2cPolicy) Select(candidates []Backend) (Backend, bool) {
 	return first, true
 }
 
-func (p *p2cPolicy) sample(n int) (int, int) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	i, j := p.rng.IntN(n), p.rng.IntN(n-1)
+type p2cSampler struct {
+	mu  sync.Mutex
+	rng *rand.Rand
+}
+
+func newP2CSampler(seed int64) *p2cSampler {
+	return &p2cSampler{rng: rand.New(rand.NewPCG(uint64(seed), 0))}
+}
+
+func (s *p2cSampler) sample(n int) (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i, j := s.rng.IntN(n), s.rng.IntN(n-1)
 	// Map the second draw onto every index except the first.
 	if j >= i {
 		j++

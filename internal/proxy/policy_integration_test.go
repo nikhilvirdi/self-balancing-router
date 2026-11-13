@@ -33,6 +33,7 @@ func TestConfiguredPolicies(t *testing.T) {
 		{"round robin", "round-robin", []string{"backend-a", "backend-b", "backend-a"}},
 		{"least requests", "least-requests", []string{"backend-a", "backend-a", "backend-a"}},
 		{"p2c", "p2c", p2c},
+		{"p2c peak ewma", "p2c-peak-ewma", p2c[:1]},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			urls := identityBackends(t, 2)
@@ -44,7 +45,7 @@ func TestConfiguredPolicies(t *testing.T) {
 			if tt.value != "" {
 				values["SBR_PROXY_POLICY"] = tt.value
 			}
-			if tt.value == "p2c" {
+			if tt.value == "p2c" || tt.value == "p2c-peak-ewma" {
 				values["SBR_PROXY_P2C_SEED"] = fmt.Sprint(seed)
 			}
 			cfg, err := config.LoadProxy(func(key string) (string, bool) {
@@ -151,6 +152,10 @@ func TestP2CConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicyP2C, 103)
 }
 
+func TestPeakEWMAConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyP2CPeakEWMA, 103)
+}
+
 func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, total int) {
 	t.Helper()
 	const count = 5
@@ -180,7 +185,7 @@ func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, tot
 		started[waitFor(t, entered)]++
 	}
 	expected := make([]int, count)
-	if policy == config.PolicyP2C {
+	if policy == config.PolicyP2C || policy == config.PolicyP2CPeakEWMA {
 		// No requests complete until the barrier is released, so replay the seeded assignments.
 		rng := rand.New(rand.NewPCG(1, 0))
 		for range total {

@@ -11,6 +11,15 @@ import (
 )
 
 func handler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
+	if policy, ok := policy.(*peakEWMAPolicy); ok {
+		external := observer
+		observer = func(o Observation) {
+			policy.observe(o)
+			if external != nil {
+				external(o)
+			}
+		}
+	}
 	const (
 		livePath  = "/livez"
 		readyPath = "/readyz"

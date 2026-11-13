@@ -96,7 +96,7 @@ func TestObservationUpstreamStatus(t *testing.T) {
 }
 
 func TestObservationGatewayFailures(t *testing.T) {
-	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests, config.PolicyP2C} {
+	for _, policy := range []config.ProxyPolicy{config.PolicyFirstEligible, config.PolicyLeastRequests, config.PolicyP2C, config.PolicyP2CPeakEWMA} {
 		t.Run(string(policy), func(t *testing.T) { testObservationGatewayFailures(t, policy) })
 	}
 }
@@ -433,20 +433,28 @@ func startObservedProxyWithPolicy(t *testing.T, policy config.ProxyPolicy, obser
 
 func observedHandler(t *testing.T, registry *Registry, policyName config.ProxyPolicy, timeout time.Duration, observer Observer) (*requestTracker, http.Handler) {
 	t.Helper()
-	backends := registry.Snapshot()
-	tracker := newRequestTracker(backends)
-	policy, err := newRoutingPolicy(policyName, tracker, 1)
+	cfg, err := config.LoadProxy(func(key string) (string, bool) { return string(policyName), key == "SBR_PROXY_POLICY" })
 	if err != nil {
 		t.Fatal(err)
 	}
+	tracker := newRequestTracker(registry.Snapshot())
+	policy, err := newRoutingPolicy(cfg, tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tracker, observedPolicyHandler(t, registry, tracker, policy, timeout, observer)
+}
+
+func observedPolicyHandler(t *testing.T, registry *Registry, tracker *requestTracker, policy routingPolicy, timeout time.Duration, observer Observer) http.Handler {
+	t.Helper()
 	transport := newTransport(time.Second, timeout)
 	t.Cleanup(transport.CloseIdleConnections)
 	logger := slog.New(slog.DiscardHandler)
-	upstreams, err := newUpstreams(backends, transport, logger)
+	upstreams, err := newUpstreams(registry.Snapshot(), transport, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tracker, handler(registry, policy, upstreams, tracker, observer, logger)
+	return handler(registry, policy, upstreams, tracker, observer, logger)
 }
 
 func startObservedRequest(t *testing.T, ctx context.Context, proxy *httptest.Server, path string) <-chan requestResult {

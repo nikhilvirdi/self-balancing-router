@@ -19,7 +19,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 	backends := registry.Snapshot()
 	tracker := newRequestTracker(backends)
-	policy, err := newRoutingPolicy(cfg.Policy, tracker, cfg.P2CSeed)
+	policy, err := newRoutingPolicy(cfg, tracker)
 	if err != nil {
 		return err
 	}
