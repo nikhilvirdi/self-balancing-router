@@ -61,10 +61,24 @@ const successfulReqDuration = new Trend('sbr_successful_duration', true);
 const measurementDuration = new Trend('sbr_measurement_duration', true);
 const measurementSuccessfulDuration = new Trend('sbr_measurement_successful_duration', true);
 
+let syncSignalSent = false;
+
 /**
  * Worker iteration function executing open-loop requests according to scenario arrival rate.
  */
 export default function () {
+  if (!syncSignalSent) {
+    syncSignalSent = true;
+    if (exec.scenario.iterationInTest === 0) {
+      const syncPayload = {
+        event: 'sbr_workload_started',
+        timestamp_ms: Date.now(),
+        iteration: 0,
+      };
+      console.log(`[SBR_WORKLOAD_START] ${JSON.stringify(syncPayload)}`);
+    }
+  }
+
   const elapsedSeconds = exec.instance.currentTestRunDuration / 1000.0;
   const phase = getTimelinePhase(elapsedSeconds, selectedScenario.timeline);
 
