@@ -254,7 +254,7 @@ func TestRunLifecycleWithAdmin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admin get failed: %v", err)
 	}
-	defer admRes.Body.Close()
+	_ = admRes.Body.Close()
 	if admRes.StatusCode != http.StatusOK {
 		t.Fatalf("admin status = %d, want 200", admRes.StatusCode)
 	}

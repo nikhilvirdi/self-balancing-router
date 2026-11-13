@@ -17,8 +17,11 @@ type latencyEstimate struct {
 
 func (e *latencyEstimate) observe(at time.Time, duration, decay time.Duration) {
 	// Concurrent callbacks can arrive after a later completion has already been applied.
-	if duration <= 0 || at.IsZero() || at.Before(e.observedAt) {
+	if duration < 0 || at.IsZero() || at.Before(e.observedAt) {
 		return
+	}
+	if duration == 0 {
+		duration = time.Nanosecond
 	}
 	sample := float64(duration)
 	if e.observedAt.IsZero() || sample > e.nanos {
@@ -92,8 +95,7 @@ func (p *peakEWMAPolicy) selectAt(candidates []Backend, now time.Time) (Backend,
 			return Backend{}, false
 		}
 		chosen = first
-		if p.latency[second.ID].score(now, secondLoad, p.initialRTT, p.decay) <
-			p.latency[first.ID].score(now, firstLoad, p.initialRTT, p.decay) {
+		if p.score(second.ID, secondLoad, now) < p.score(first.ID, firstLoad, now) {
 			chosen = second
 		}
 	}
@@ -101,6 +103,13 @@ func (p *peakEWMAPolicy) selectAt(candidates []Backend, now time.Time) (Backend,
 		estimate.assignedAt = now
 	}
 	return chosen, true
+}
+
+func (p *peakEWMAPolicy) score(id string, inFlight int, now time.Time) float64 {
+	if estimate := p.latency[id]; estimate != nil {
+		return estimate.score(now, inFlight, p.initialRTT, p.decay)
+	}
+	return float64(p.initialRTT) * float64(inFlight+1)
 }
 
 func (p *peakEWMAPolicy) observe(o Observation) {

@@ -67,4 +67,3 @@ func TestK6ScenarioStageMapping(t *testing.T) {
 		}
 	}
 }
-

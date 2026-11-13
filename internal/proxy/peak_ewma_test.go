@@ -40,12 +40,20 @@ func TestPeakEWMAEstimator(t *testing.T) {
 	for _, input := range []struct {
 		at       time.Time
 		duration time.Duration
-	}{{last.Add(-time.Nanosecond), time.Hour}, {last.Add(time.Second), 0}, {last, -1}, {time.Time{}, time.Hour}} {
+	}{{last.Add(-time.Nanosecond), time.Hour}, {last.Add(time.Second), -time.Millisecond}, {last, -1}, {time.Time{}, time.Hour}} {
 		e.observe(input.at, input.duration, decay)
 	}
 	if e != before {
 		t.Fatalf("invalid or stale samples changed estimate: %+v", e)
 	}
+	// Zero duration should be clamped to 1ns and update the estimate.
+	zeroSampleTime := last.Add(time.Second)
+	e.observe(zeroSampleTime, 0, decay)
+	if e.observedAt != zeroSampleTime {
+		t.Fatalf("zero-duration observation did not update observedAt: %+v", e)
+	}
+	want = math.Exp(-1/float64(decay/time.Second))*(want-1) + 1
+	assertLatency(t, e.nanos, time.Duration(want))
 	e.observe(last, math.MaxInt64, decay)
 	if got := e.score(last, math.MaxInt, initial, decay); math.IsInf(got, 0) || math.IsNaN(got) || got <= 0 {
 		t.Fatalf("invalid extreme score %v", got)
@@ -236,7 +244,7 @@ func TestPeakEWMAHTTPFeedback(t *testing.T) {
 	setHealth(t, registry, "backend-a", Healthy)
 	fast := request("backend-a")
 	// Guarantee that the held request outlasts the actual fast sample.
-	timer := time.NewTimer(3 * fast.Duration)
+	timer := time.NewTimer(max(3*fast.Duration, 5*time.Millisecond))
 	waitFor(t, timer.C)
 	close(release)
 	if got := waitFor(t, slow); got.err != nil || got.body != "backend-b" {
@@ -282,7 +290,7 @@ func TestPeakEWMAHTTPFeedback(t *testing.T) {
 	p.mu.Lock()
 	after = *p.latency["backend-b"]
 	p.mu.Unlock()
-	want := float64(recovered.Duration)
+	want := float64(max(recovered.Duration, time.Nanosecond))
 	if recovered.Duration <= peak.Duration {
 		alpha := math.Exp(-float64(recovered.FinishedAt.Sub(peak.FinishedAt)) / float64(p.decay))
 		want = alpha*float64(peak.Duration) + (1-alpha)*want
@@ -310,5 +318,116 @@ func assertLatency(t *testing.T, nanos float64, want time.Duration) {
 	t.Helper()
 	if math.IsNaN(nanos) || math.Abs(nanos-float64(want)) > 1 {
 		t.Fatalf("latency = %g ns, want %s", nanos, want)
+	}
+}
+
+func TestPeakEWMAZeroDurationObservation(t *testing.T) {
+	const initial, decay = 10 * time.Millisecond, 10 * time.Second
+	now := time.Unix(100, 0)
+
+	// Direct latencyEstimate observation of zero duration
+	var e latencyEstimate
+	e.observe(now, 0, decay)
+	if e.observedAt != now {
+		t.Fatalf("observedAt = %v, want %v", e.observedAt, now)
+	}
+	if e.nanos != float64(time.Nanosecond) {
+		t.Fatalf("nanos = %g, want %g", e.nanos, float64(time.Nanosecond))
+	}
+
+	// Negative duration must be rejected
+	later := now.Add(time.Second)
+	e.observe(later, -time.Millisecond, decay)
+	if e.observedAt != now || e.nanos != float64(time.Nanosecond) {
+		t.Fatalf("negative duration was not rejected: %+v", e)
+	}
+
+	// Policy observe should clamp zero-duration observation to 1ns
+	backends := []Backend{{ID: "backend-a"}, {ID: "backend-b"}}
+	policy := testPeakEWMAPolicy(backends, now)
+	policy.observe(successfulSample("backend-a", later, 0))
+
+	policy.mu.Lock()
+	est := *policy.latency["backend-a"]
+	policy.mu.Unlock()
+
+	if est.observedAt != later {
+		t.Fatalf("policy observedAt = %v, want %v", est.observedAt, later)
+	}
+	if est.nanos != float64(time.Nanosecond) {
+		t.Fatalf("policy nanos = %g, want %g", est.nanos, float64(time.Nanosecond))
+	}
+}
+
+func TestPeakEWMAColdStartAndZeroDurationSelection(t *testing.T) {
+	const initial = 10 * time.Millisecond
+	now := time.Unix(100, 0)
+	backends := []Backend{{ID: "backend-a"}, {ID: "backend-b"}}
+	policy := testPeakEWMAPolicy(backends, now)
+
+	// In cold start, both backends score initialRTT * (0 + 1) = 10ms
+	policy.mu.Lock()
+	scoreA := policy.score("backend-a", 0, now)
+	scoreB := policy.score("backend-b", 0, now)
+	policy.mu.Unlock()
+
+	if scoreA != float64(initial) || scoreB != float64(initial) {
+		t.Fatalf("cold-start scores = (%g, %g), want %g", scoreA, scoreB, float64(initial))
+	}
+
+	// Backend-a receives a zero-duration completion (clamped to 1ns)
+	completionTime := now.Add(50 * time.Millisecond)
+	policy.observe(successfulSample("backend-a", completionTime, 0))
+
+	policy.mu.Lock()
+	scoreA = policy.score("backend-a", 0, completionTime)
+	scoreB = policy.score("backend-b", 0, completionTime)
+	policy.mu.Unlock()
+
+	// Backend-a should score 1ns, beating Backend-b's unobserved 10ms
+	if scoreA >= scoreB {
+		t.Fatalf("zero-duration backend-a score (%g) should be lower than cold backend-b score (%g)", scoreA, scoreB)
+	}
+	if scoreA != float64(time.Nanosecond) {
+		t.Fatalf("backend-a score = %g, want 1ns (%g)", scoreA, float64(time.Nanosecond))
+	}
+
+	// Selection between candidate backends: backend-a must be chosen over backend-b
+	selected, ok := policy.selectAt(backends, completionTime)
+	if !ok || selected.ID != "backend-a" {
+		t.Fatalf("selected = %v (ok=%v), want backend-a", selected, ok)
+	}
+}
+
+func TestPeakEWMAMissingEstimatorDefensiveLookup(t *testing.T) {
+	now := time.Unix(100, 0)
+	known := []Backend{{ID: "backend-a"}}
+	tracker := newRequestTracker(append(known, Backend{ID: "backend-b"}))
+	policy := newPeakEWMAPolicy(config.ProxyConfig{
+		P2CSeed: 42, PeakEWMADecay: 10 * time.Second, PeakEWMAInitialRTT: 10 * time.Millisecond,
+	}, tracker, now)
+
+	// backend-b is in tracker but intentionally deleted from policy.latency to simulate an unmapped candidate
+	delete(policy.latency, "backend-b")
+	candidates := []Backend{{ID: "backend-a"}, {ID: "backend-b"}}
+
+	// Must not panic, and should return a valid selection
+	selected, ok := policy.selectAt(candidates, now)
+	if !ok {
+		t.Fatal("selectAt failed on unmapped backend candidate")
+	}
+	if selected.ID != "backend-a" && selected.ID != "backend-b" {
+		t.Fatalf("selected = %v, want backend-a or backend-b", selected)
+	}
+
+	// Unmapped backend should be safe to observe without panic and should not corrupt latency map
+	policy.observe(successfulSample("backend-b", now.Add(time.Second), 5*time.Millisecond))
+
+	policy.mu.Lock()
+	est := policy.latency["backend-b"]
+	policy.mu.Unlock()
+
+	if est != nil {
+		t.Fatalf("unmapped backend unexpectedly created in latency map: %+v", est)
 	}
 }

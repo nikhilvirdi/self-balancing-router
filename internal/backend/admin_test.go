@@ -72,7 +72,7 @@ func TestAdminAuthentication(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer res.Body.Close()
+			defer func() { _ = res.Body.Close() }()
 
 			if res.StatusCode != tt.wantStatus {
 				t.Fatalf("status = %d, want %d", res.StatusCode, tt.wantStatus)
@@ -101,7 +101,7 @@ func TestAdminGetWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("GET /admin/v1/workload status = %d, want 200", res.StatusCode)
@@ -187,7 +187,7 @@ func TestAdminPutWorkload(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400 for payload %s", resp.StatusCode, tt.body)
@@ -210,7 +210,7 @@ func TestAdminPutWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized body status = %d, want 413", resp.StatusCode)
 	}
@@ -234,7 +234,7 @@ func TestAdminResetWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("reset status = %d, want 200", res.StatusCode)
@@ -260,7 +260,7 @@ func TestAdminResetWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res2.Body.Close()
+	defer func() { _ = res2.Body.Close() }()
 	if res2.StatusCode != http.StatusOK {
 		t.Fatalf("repeated reset status = %d, want 200", res2.StatusCode)
 	}
@@ -278,7 +278,7 @@ func TestAdminMethodNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE status = %d, want 405", res.StatusCode)
 	}
@@ -293,7 +293,7 @@ func TestAdminMethodNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res2.Body.Close()
+	defer func() { _ = res2.Body.Close() }()
 	if res2.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET reset status = %d, want 405", res2.StatusCode)
 	}
@@ -313,7 +313,7 @@ func TestAdminUnknownPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown path status = %d, want 404", res.StatusCode)
 	}
@@ -348,7 +348,7 @@ func TestApplicationListenerIsolation(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer res.Body.Close()
+			_ = res.Body.Close()
 
 			if res.StatusCode != http.StatusNotFound {
 				t.Fatalf("app listener %s %s returned status %d, want 404", m, p, res.StatusCode)
@@ -400,7 +400,7 @@ func TestAdminResponsivenessUnderApplicationSaturation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer adminRes.Body.Close()
+	defer func() { _ = adminRes.Body.Close() }()
 	if elapsed := time.Since(adminStart); elapsed > 50*time.Millisecond {
 		t.Fatalf("GET /admin took %v under saturation, want prompt response", elapsed)
 	}
@@ -417,7 +417,7 @@ func TestAdminResponsivenessUnderApplicationSaturation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer putRes.Body.Close()
+	defer func() { _ = putRes.Body.Close() }()
 	if elapsed := time.Since(putStart); elapsed > 50*time.Millisecond {
 		t.Fatalf("PUT /admin took %v under saturation, want prompt response", elapsed)
 	}
@@ -431,7 +431,7 @@ func TestAdminResponsivenessUnderApplicationSaturation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer hRes.Body.Close()
+	defer func() { _ = hRes.Body.Close() }()
 	if elapsed := time.Since(hStart); elapsed > 50*time.Millisecond {
 		t.Fatalf("GET /healthz took %v under saturation, want prompt response", elapsed)
 	}
@@ -444,7 +444,7 @@ func TestAdminResponsivenessUnderApplicationSaturation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer overloadRes.Body.Close()
+	defer func() { _ = overloadRes.Body.Close() }()
 	if overloadRes.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("app request under overload = %d, want 503", overloadRes.StatusCode)
 	}

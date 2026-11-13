@@ -757,5 +757,3 @@ func TestDelayModelConcurrentUpdatesAndSampling(t *testing.T) {
 
 	wg.Wait()
 }
-
-
