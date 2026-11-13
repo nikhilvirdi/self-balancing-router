@@ -312,11 +312,12 @@ func testProxyWithTransport(t *testing.T, transport *http.Transport, logger *slo
 	if err != nil {
 		t.Fatal(err)
 	}
-	upstreams, err := newUpstreams(registry.Snapshot(), transport, logger)
+	backendsSnapshot := registry.Snapshot()
+	upstreams, err := newUpstreams(backendsSnapshot, transport, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return registry, handler(registry, upstreams)
+	return registry, handler(registry, upstreams, newRequestTracker(backendsSnapshot), nil, logger)
 }
 
 func assertResponse(t *testing.T, proxy *httptest.Server, method, path string, status int, body string) {

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ func TestHandler(t *testing.T) {
 		{http.MethodGet, "/livez/", http.StatusServiceUnavailable, "request routing is unavailable\n", ""},
 		{http.MethodGet, "/api/../livez", http.StatusServiceUnavailable, "request routing is unavailable\n", ""},
 	}
-	handle := handler(newTestRegistry(t), nil)
+	handle := handler(newTestRegistry(t), nil, newRequestTracker(nil), nil, slog.New(slog.DiscardHandler))
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			response := httptest.NewRecorder()

@@ -33,7 +33,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 
 	server := &http.Server{
-		Handler:                      handler(registry, upstreams),
+		Handler:                      handler(registry, upstreams, newRequestTracker(backends), nil, logger),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,

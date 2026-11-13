@@ -2,10 +2,12 @@ package proxy
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httputil"
 )
 
-func handler(registry *Registry, upstreams map[string]http.Handler) http.Handler {
+func handler(registry *Registry, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
 	const (
 		livePath  = "/livez"
 		readyPath = "/readyz"
@@ -36,7 +38,13 @@ func handler(registry *Registry, upstreams map[string]http.Handler) http.Handler
 			routingUnavailable(w)
 			return
 		}
-		upstreams[backend.ID].ServeHTTP(w, r)
+		upstream := upstreams[backend.ID]
+		if upstream == nil {
+			logger.Error("missing upstream handler", "backend_id", backend.ID)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		forwardTracked(w, r, upstream, backend.ID, tracker, observer, logger)
 	})
 }
 

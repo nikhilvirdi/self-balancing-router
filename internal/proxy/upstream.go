@@ -26,8 +26,8 @@ func newTransport(dialTimeout, responseHeaderTimeout time.Duration) *http.Transp
 	return transport
 }
 
-func newUpstreams(backends []Backend, transport *http.Transport, logger *slog.Logger) (map[string]http.Handler, error) {
-	upstreams := make(map[string]http.Handler, len(backends))
+func newUpstreams(backends []Backend, transport *http.Transport, logger *slog.Logger) (map[string]*httputil.ReverseProxy, error) {
+	upstreams := make(map[string]*httputil.ReverseProxy, len(backends))
 	for _, backend := range backends {
 		target, err := url.Parse(backend.URL)
 		if err != nil {
@@ -47,14 +47,29 @@ func newUpstreams(backends []Backend, transport *http.Transport, logger *slog.Lo
 				req.SetXForwarded()
 				forwardRequestTrailers(req)
 			},
+			ModifyResponse: func(res *http.Response) error {
+				if observation := requestObservation(res.Request); observation != nil {
+					observation.UpstreamStatus = res.StatusCode
+				}
+				return nil
+			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				observation := requestObservation(r)
 				if r.Context().Err() != nil {
+					if observation != nil {
+						observation.Outcome = Canceled
+					}
 					return
 				}
 				status := http.StatusBadGateway
+				outcome := TransportFailure
 				var networkErr net.Error
 				if errors.As(err, &networkErr) && networkErr.Timeout() {
 					status = http.StatusGatewayTimeout
+					outcome = UpstreamTimeout
+				}
+				if observation != nil && observation.UpstreamStatus == 0 {
+					observation.Outcome = outcome
 				}
 				backendLogger.Error("upstream request failed", "error", err, "status", status)
 				w.Header().Set("Cache-Control", "no-store")
@@ -80,6 +95,7 @@ func forwardRequestTrailers(req *httputil.ProxyRequest) {
 }
 
 func allowedRequestTrailer(name string, connection []string) bool {
+	name = http.CanonicalHeaderKey(name)
 	if strings.HasPrefix(name, "X-Forwarded-") || strings.HasPrefix(name, "If-") {
 		return false
 	}
