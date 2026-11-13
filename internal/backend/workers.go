@@ -21,11 +21,7 @@ type requestInfo struct {
 }
 
 func defaultProcessor(ctx context.Context, req requestInfo) (response, error) {
-	return response{
-		BackendID: req.BackendID,
-		Method:    req.Method,
-		Path:      req.Path,
-	}, ctx.Err()
+	return response(req), ctx.Err()
 }
 
 type workTask struct {
@@ -241,4 +237,3 @@ func (p *Pool) Close() {
 
 	p.wg.Wait()
 }
-

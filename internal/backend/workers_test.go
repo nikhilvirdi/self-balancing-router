@@ -347,23 +347,27 @@ func TestPoolCanceledActiveRequest(t *testing.T) {
 func TestPoolGracefulDraining(t *testing.T) {
 	const workers = 2
 	const queueCap = 4
+	const queuedTasks = 2
 
 	block := make(chan struct{})
-	var enteredCount atomic.Int32
+	release := sync.OnceFunc(func() { close(block) })
 	var completedCount atomic.Int32
 
 	proc := func(ctx context.Context, req requestInfo) (response, error) {
-		enteredCount.Add(1)
 		<-block
 		completedCount.Add(1)
 		return response{BackendID: req.BackendID}, nil
 	}
 
 	pool := NewPool(workers, queueCap, proc)
+	t.Cleanup(func() {
+		release()
+		pool.Close()
+	})
 
 	// Submit 2 active + 2 queued
 	var wg sync.WaitGroup
-	for range 4 {
+	for range workers + queuedTasks {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -374,12 +378,17 @@ func TestPoolGracefulDraining(t *testing.T) {
 		}()
 	}
 
-	// Wait for 2 workers to enter
-	for {
-		if enteredCount.Load() == 2 {
-			break
+	// Ensure all submissions have been admitted before stopping admission.
+	deadline := time.NewTimer(testTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for active, queued := pool.Stats(); active != workers || queued != queuedTasks; active, queued = pool.Stats() {
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("Stats() = (%d, %d), want (%d, %d)", active, queued, workers, queuedTasks)
 		}
-		time.Sleep(time.Millisecond)
 	}
 
 	// Stop accepting new tasks
@@ -392,11 +401,11 @@ func TestPoolGracefulDraining(t *testing.T) {
 	}
 
 	// Release blocked tasks
-	close(block)
+	release()
 	wg.Wait()
 
-	if completedCount.Load() != 4 {
-		t.Fatalf("completed = %d, want 4", completedCount.Load())
+	if completedCount.Load() != workers+queuedTasks {
+		t.Fatalf("completed = %d, want %d", completedCount.Load(), workers+queuedTasks)
 	}
 
 	pool.Close()
