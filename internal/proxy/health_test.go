@@ -310,6 +310,7 @@ func TestRunStopsHealthChecksWhileDraining(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, config.ProxyConfig{
+			Policy:     config.PolicyFirstEligible,
 			ListenAddr: "127.0.0.1:0", ShutdownTimeout: testTimeout,
 			DialTimeout: time.Second, ResponseHeaderTimeout: testTimeout,
 			HealthCheck: cfg,

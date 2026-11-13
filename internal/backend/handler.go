@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 type response struct {
@@ -38,6 +39,14 @@ func Handler(backendID string, pool *Pool) http.Handler {
 				w.WriteHeader(http.StatusMethodNotAllowed)
 				_, _ = io.WriteString(w, "Method Not Allowed\n")
 			}
+			return
+		}
+
+		if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
+			w.Header().Set("Cache-Control", "no-store")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, "{\"error\":\"not found\"}\n")
 			return
 		}
 

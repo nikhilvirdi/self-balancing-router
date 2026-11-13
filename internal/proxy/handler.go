@@ -5,9 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
+	"slices"
 )
 
-func handler(registry *Registry, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
+func handler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
 	const (
 		livePath  = "/livez"
 		readyPath = "/readyz"
@@ -33,9 +34,15 @@ func handler(registry *Registry, upstreams map[string]*httputil.ReverseProxy, tr
 			mux.ServeHTTP(w, r)
 			return
 		}
-		backend, eligible := firstEligible(registry.Eligible())
-		if !eligible {
+		candidates := registry.Eligible()
+		if len(candidates) == 0 {
 			routingUnavailable(w)
+			return
+		}
+		backend, selected := policy.Select(candidates)
+		if !selected || !slices.Contains(candidates, backend) {
+			logger.Error("invalid routing policy selection", "backend_id", backend.ID)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
 		upstream := upstreams[backend.ID]
@@ -46,13 +53,6 @@ func handler(registry *Registry, upstreams map[string]*httputil.ReverseProxy, tr
 		}
 		forwardTracked(w, r, upstream, backend.ID, tracker, observer, logger)
 	})
-}
-
-func firstEligible(candidates []Backend) (Backend, bool) {
-	if len(candidates) == 0 {
-		return Backend{}, false
-	}
-	return candidates[0], true
 }
 
 func routingUnavailable(w http.ResponseWriter) {

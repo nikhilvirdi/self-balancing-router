@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+type ProxyPolicy string
+
+const (
+	PolicyFirstEligible ProxyPolicy = "first-eligible"
+	PolicyRoundRobin    ProxyPolicy = "round-robin"
+)
+
 type ProxyConfig struct {
 	Config
 	ListenAddr            string
@@ -16,6 +23,7 @@ type ProxyConfig struct {
 	ResponseHeaderTimeout time.Duration
 	Backends              []BackendConfig
 	HealthCheck           HealthCheckConfig
+	Policy                ProxyPolicy
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -29,6 +37,16 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		ShutdownTimeout:       15 * time.Second,
 		DialTimeout:           3 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
+		Policy:                PolicyFirstEligible,
+	}
+	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
+		policy := ProxyPolicy(strings.TrimSpace(value))
+		switch policy {
+		case PolicyFirstEligible, PolicyRoundRobin:
+			cfg.Policy = policy
+		default:
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q or %q", value, PolicyFirstEligible, PolicyRoundRobin)
+		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

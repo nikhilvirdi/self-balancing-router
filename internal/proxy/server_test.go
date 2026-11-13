@@ -19,7 +19,7 @@ const testTimeout = 5 * time.Second
 func TestRunOccupiedPort(t *testing.T) {
 	listener := listenLoopback(t)
 	addr := listener.Addr().String()
-	err := Run(t.Context(), config.ProxyConfig{ListenAddr: addr, ShutdownTimeout: time.Second}, slog.New(slog.DiscardHandler))
+	err := Run(t.Context(), config.ProxyConfig{ListenAddr: addr, ShutdownTimeout: time.Second, Policy: config.PolicyFirstEligible}, slog.New(slog.DiscardHandler))
 	var opErr *net.OpError
 	if !errors.As(err, &opErr) || opErr.Op != "listen" || !strings.Contains(err.Error(), addr) {
 		t.Fatalf("Run() error = %v, want wrapped listen error for %s", err, addr)

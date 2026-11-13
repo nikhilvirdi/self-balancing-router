@@ -21,6 +21,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 		ProcessingDelay:  0,
 		ProcessingJitter: 0,
 		DelaySeed:        1,
+		AdminEnabled:     false,
+		AdminListenAddr:  "127.0.0.1:9090",
+		AdminToken:       "",
 	}
 
 	got, err := LoadConfig(func(string) (string, bool) { return "", false })
@@ -39,6 +42,9 @@ func TestLoadConfigOverrides(t *testing.T) {
 		"SBR_BACKEND_PROCESSING_DELAY":  "40ms",
 		"SBR_BACKEND_PROCESSING_JITTER": "20ms",
 		"SBR_BACKEND_DELAY_SEED":        "42",
+		"SBR_BACKEND_ADMIN_ENABLED":     "true",
+		"SBR_BACKEND_ADMIN_LISTEN_ADDR": "127.0.0.1:9095",
+		"SBR_BACKEND_ADMIN_TOKEN":       "this-is-a-valid-admin-token-1234",
 		"SBR_LOG_LEVEL":                 "debug",
 		"SBR_LOG_FORMAT":                "text",
 	}
@@ -53,6 +59,9 @@ func TestLoadConfigOverrides(t *testing.T) {
 		ProcessingDelay:  40 * time.Millisecond,
 		ProcessingJitter: 20 * time.Millisecond,
 		DelaySeed:        42,
+		AdminEnabled:     true,
+		AdminListenAddr:  "127.0.0.1:9095",
+		AdminToken:       "this-is-a-valid-admin-token-1234",
 	}
 
 	got, err := LoadConfig(func(key string) (string, bool) {
@@ -127,6 +136,13 @@ func TestLoadConfigInvalid(t *testing.T) {
 		{"SBR_BACKEND_DELAY_SEED", ""},
 		{"SBR_BACKEND_DELAY_SEED", "invalid"},
 		{"SBR_BACKEND_DELAY_SEED", "1.5"},
+		{"SBR_BACKEND_ADMIN_ENABLED", "invalid"},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", ""},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", "localhost"},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", "::1:9090"},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", "bad host:9090"},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", ":-1"},
+		{"SBR_BACKEND_ADMIN_LISTEN_ADDR", ":65536"},
 	}
 
 	for _, tt := range tests {
@@ -221,6 +237,50 @@ func TestLoadConfigDelayVariations(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAdminValidation(t *testing.T) {
+	// 1. Admin enabled without token should fail
+	_, err := LoadConfig(func(key string) (string, bool) {
+		if key == "SBR_BACKEND_ADMIN_ENABLED" {
+			return "true", true
+		}
+		return "", false
+	})
+	if err == nil || !strings.Contains(err.Error(), "SBR_BACKEND_ADMIN_TOKEN") {
+		t.Fatalf("LoadConfig() with enabled admin and no token error = %v, want error naming SBR_BACKEND_ADMIN_TOKEN", err)
+	}
+
+	// 2. Admin enabled with short token (< 16 chars) should fail
+	_, err = LoadConfig(func(key string) (string, bool) {
+		switch key {
+		case "SBR_BACKEND_ADMIN_ENABLED":
+			return "true", true
+		case "SBR_BACKEND_ADMIN_TOKEN":
+			return "short-token-15c", true
+		}
+		return "", false
+	})
+	if err == nil || !strings.Contains(err.Error(), "SBR_BACKEND_ADMIN_TOKEN") {
+		t.Fatalf("LoadConfig() with enabled admin and short token error = %v, want error naming SBR_BACKEND_ADMIN_TOKEN", err)
+	}
+
+	// 3. Admin enabled with valid token (>= 16 chars) should succeed
+	cfg, err := LoadConfig(func(key string) (string, bool) {
+		switch key {
+		case "SBR_BACKEND_ADMIN_ENABLED":
+			return "true", true
+		case "SBR_BACKEND_ADMIN_TOKEN":
+			return "valid-token-16chars!", true
+		}
+		return "", false
+	})
+	if err != nil {
+		t.Fatalf("LoadConfig() with valid token unexpected error: %v", err)
+	}
+	if !cfg.AdminEnabled || cfg.AdminToken != "valid-token-16chars!" {
+		t.Fatalf("unexpected admin config: %+v", cfg)
+	}
+}
+
 func TestLoadConfigIgnoresProxySettings(t *testing.T) {
 	cfg, err := LoadConfig(func(key string) (string, bool) {
 		return "invalid", strings.HasPrefix(key, "SBR_PROXY_")
@@ -235,6 +295,9 @@ func TestLoadConfigIgnoresProxySettings(t *testing.T) {
 		ProcessingDelay:  0,
 		ProcessingJitter: 0,
 		DelaySeed:        1,
+		AdminEnabled:     false,
+		AdminListenAddr:  "127.0.0.1:9090",
+		AdminToken:       "",
 	}
 	if err != nil || cfg != want {
 		t.Fatalf("LoadConfig() = %+v, %v, want %+v", cfg, err, want)

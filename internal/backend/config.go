@@ -22,6 +22,8 @@ const (
 	maxProcessingJitter     = 5 * time.Minute
 	maxCombinedDelay        = 10 * time.Minute
 	defaultDelaySeed        = int64(1)
+	defaultAdminListenAddr  = "127.0.0.1:9090"
+	minAdminTokenLength     = 16
 )
 
 type Config struct {
@@ -34,6 +36,22 @@ type Config struct {
 	ProcessingDelay  time.Duration
 	ProcessingJitter time.Duration
 	DelaySeed        int64
+	AdminEnabled     bool
+	AdminListenAddr  string
+	AdminToken       string
+}
+
+func validateWorkload(delay, jitter time.Duration) error {
+	if delay < 0 || delay > maxProcessingDelay {
+		return fmt.Errorf("invalid processing delay %v: expected a non-negative duration up to %v", delay, maxProcessingDelay)
+	}
+	if jitter < 0 || jitter > maxProcessingJitter {
+		return fmt.Errorf("invalid processing jitter %v: expected a non-negative duration up to %v", jitter, maxProcessingJitter)
+	}
+	if delay > maxCombinedDelay-jitter {
+		return fmt.Errorf("combined processing delay and jitter exceeds %v", maxCombinedDelay)
+	}
+	return nil
 }
 
 var backendID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -53,6 +71,9 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 		ProcessingDelay:  defaultProcessingDelay,
 		ProcessingJitter: defaultProcessingJitter,
 		DelaySeed:        defaultDelaySeed,
+		AdminEnabled:     false,
+		AdminListenAddr:  defaultAdminListenAddr,
+		AdminToken:       "",
 	}
 
 	if value, ok := lookupEnv("SBR_BACKEND_ID"); ok {
@@ -126,6 +147,38 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 			return Config{}, fmt.Errorf("invalid SBR_BACKEND_DELAY_SEED %q: expected an integer", value)
 		}
 		cfg.DelaySeed = seed
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_ADMIN_ENABLED"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_ADMIN_ENABLED %q: expected a boolean", value)
+		}
+		cfg.AdminEnabled = enabled
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_ADMIN_LISTEN_ADDR"); ok {
+		host, port, err := net.SplitHostPort(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_ADMIN_LISTEN_ADDR %q: %w", value, err)
+		}
+		if strings.ContainsAny(host, " \t\r\n/\\") {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_ADMIN_LISTEN_ADDR %q: invalid TCP host", value)
+		}
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_ADMIN_LISTEN_ADDR %q: expected a numeric TCP port from 0 to 65535", value)
+		}
+		cfg.AdminListenAddr = value
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_ADMIN_TOKEN"); ok {
+		cfg.AdminToken = value
+	}
+
+	if cfg.AdminEnabled {
+		if len(cfg.AdminToken) < minAdminTokenLength {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_ADMIN_TOKEN: expected a token with at least %d characters when administrative access is enabled", minAdminTokenLength)
+		}
 	}
 
 	return cfg, nil

@@ -13,6 +13,10 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error {
+	policy, err := newRoutingPolicy(cfg.Policy)
+	if err != nil {
+		return err
+	}
 	registry, err := NewRegistry(cfg.Backends)
 	if err != nil {
 		return fmt.Errorf("initialize backend registry: %w", err)
@@ -33,13 +37,14 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 
 	server := &http.Server{
-		Handler:                      handler(registry, upstreams, newRequestTracker(backends), nil, logger),
+		Handler:                      handler(registry, policy, upstreams, newRequestTracker(backends), nil, logger),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,
 		DisableGeneralOptionsHandler: true,
 		ErrorLog:                     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
+	logger.Info("routing policy initialized", "policy", cfg.Policy)
 	stopHealthChecks := startHealthChecks(ctx, registry, cfg.HealthCheck, logger)
 	defer stopHealthChecks()
 	return serve(ctx, server, listener, cfg.ShutdownTimeout, logger)

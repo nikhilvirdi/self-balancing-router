@@ -34,6 +34,25 @@ func TestRunOccupiedPort(t *testing.T) {
 	}
 }
 
+func TestRunOccupiedAdminPort(t *testing.T) {
+	adminListener := listenLoopback(t)
+	adminAddr := adminListener.Addr().String()
+	err := Run(t.Context(), Config{
+		ID:              "backend-admin-occupied",
+		ListenAddr:      "127.0.0.1:0",
+		ShutdownTimeout: time.Second,
+		Workers:         2,
+		QueueCapacity:   4,
+		AdminEnabled:    true,
+		AdminListenAddr: adminAddr,
+		AdminToken:      "test-secret-token-16chars",
+	}, slog.New(slog.DiscardHandler))
+
+	if err == nil || !strings.Contains(err.Error(), adminAddr) || !strings.Contains(err.Error(), "listen admin") {
+		t.Fatalf("Run() error = %v, want error naming admin listener address %s", err, adminAddr)
+	}
+}
+
 func TestServeUnexpectedError(t *testing.T) {
 	listener := listenLoopback(t)
 	if err := listener.Close(); err != nil {
@@ -185,6 +204,85 @@ func TestRunLifecycle(t *testing.T) {
 	verifyListenerClosed(t, addr)
 }
 
+func TestRunLifecycleWithAdmin(t *testing.T) {
+	addressChan := make(chan string, 1)
+	adminAddressChan := make(chan string, 1)
+	logger := slog.New(&listenLogHandler{
+		Handler:      slog.NewTextHandler(io.Discard, nil),
+		address:      addressChan,
+		adminAddress: adminAddressChan,
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	cfg := Config{
+		Config:          config.Config{LogLevel: slog.LevelInfo, LogFormat: config.LogJSON},
+		ID:              "backend-admin-lifecycle",
+		ListenAddr:      "127.0.0.1:0",
+		ShutdownTimeout: testTimeout,
+		Workers:         2,
+		QueueCapacity:   4,
+		AdminEnabled:    true,
+		AdminListenAddr: "127.0.0.1:0",
+		AdminToken:      "super-secret-admin-token-12345",
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, cfg, logger)
+	}()
+
+	appAddr := waitFor(t, addressChan)
+	adminAddr := waitFor(t, adminAddressChan)
+	client := &http.Client{Timeout: testTimeout}
+
+	// 1. Check healthz on application listener
+	hRes, err := client.Get("http://" + appAddr + "/healthz")
+	if err != nil {
+		t.Fatalf("health check failed: %v", err)
+	}
+	_ = hRes.Body.Close()
+	if hRes.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", hRes.StatusCode)
+	}
+
+	// 2. Check admin GET /admin/v1/workload on admin listener
+	req, _ := http.NewRequest("GET", "http://"+adminAddr+"/admin/v1/workload", nil)
+	req.Header.Set("Authorization", "Bearer super-secret-admin-token-12345")
+	admRes, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("admin get failed: %v", err)
+	}
+	defer admRes.Body.Close()
+	if admRes.StatusCode != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200", admRes.StatusCode)
+	}
+
+	// 3. Update delay via admin listener
+	putReq, _ := http.NewRequest("PUT", "http://"+adminAddr+"/admin/v1/workload", strings.NewReader(`{"processing_delay":"10ms","processing_jitter":"5ms"}`))
+	putReq.Header.Set("Authorization", "Bearer super-secret-admin-token-12345")
+	putReq.Header.Set("Content-Type", "application/json")
+	putRes, err := client.Do(putReq)
+	if err != nil {
+		t.Fatalf("admin put failed: %v", err)
+	}
+	_ = putRes.Body.Close()
+	if putRes.StatusCode != http.StatusOK {
+		t.Fatalf("admin put status = %d, want 200", putRes.StatusCode)
+	}
+
+	// 4. Initiate graceful shutdown
+	cancel()
+	if err := waitFor(t, done); err != nil {
+		t.Fatalf("Run() error on shutdown: %v", err)
+	}
+
+	// 5. Verify both listeners are closed
+	verifyListenerClosed(t, appAddr)
+	verifyListenerClosed(t, adminAddr)
+}
+
 func verifyListenerClosed(t *testing.T, addr string) {
 	t.Helper()
 	l, err := net.Listen("tcp", addr)
@@ -196,8 +294,10 @@ func verifyListenerClosed(t *testing.T, addr string) {
 
 type listenLogHandler struct {
 	slog.Handler
-	address chan<- string
-	bound   string
+	address      chan<- string
+	adminAddress chan<- string
+	bound        string
+	adminBound   string
 }
 
 func (h *listenLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
@@ -206,6 +306,9 @@ func (h *listenLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for _, attr := range attrs {
 		if attr.Key == "address" {
 			clone.bound = attr.Value.String()
+		}
+		if attr.Key == "admin_address" {
+			clone.adminBound = attr.Value.String()
 		}
 	}
 	return &clone
@@ -216,6 +319,12 @@ func (h *listenLogHandler) Handle(ctx context.Context, record slog.Record) error
 		select {
 		case h.address <- h.bound:
 		default:
+		}
+		if h.adminAddress != nil && h.adminBound != "" {
+			select {
+			case h.adminAddress <- h.adminBound:
+			default:
+			}
 		}
 	}
 	return h.Handler.Handle(ctx, record)

@@ -317,7 +317,7 @@ func testProxyWithTransport(t *testing.T, transport *http.Transport, logger *slo
 	if err != nil {
 		t.Fatal(err)
 	}
-	return registry, handler(registry, upstreams, newRequestTracker(backendsSnapshot), nil, logger)
+	return registry, handler(registry, firstEligiblePolicy{}, upstreams, newRequestTracker(backendsSnapshot), nil, logger)
 }
 
 func assertResponse(t *testing.T, proxy *httptest.Server, method, path string, status int, body string) {
