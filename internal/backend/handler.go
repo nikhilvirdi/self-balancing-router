@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -13,7 +14,13 @@ type response struct {
 	Path      string `json:"path"`
 }
 
-func Handler(backendID string) http.Handler {
+type errorResponse struct {
+	Error string `json:"error"`
+}
+
+var overloadPayload = []byte(`{"error":"backend overloaded"}` + "\n")
+
+func Handler(backendID string, pool *Pool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
 			w.Header().Set("Cache-Control", "no-store")
@@ -34,11 +41,24 @@ func Handler(backendID string) http.Handler {
 			return
 		}
 
-		payload, err := json.Marshal(response{
+		resp, err := pool.Submit(r.Context(), requestInfo{
 			BackendID: backendID,
 			Method:    r.Method,
 			Path:      r.URL.Path,
 		})
+		if err != nil {
+			if errors.Is(err, ErrOverloaded) || errors.Is(err, ErrShutdown) {
+				writeOverloaded(w, r)
+				return
+			}
+			if r.Context().Err() != nil {
+				return
+			}
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		payload, err := json.Marshal(resp)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
@@ -53,3 +73,12 @@ func Handler(backendID string) http.Handler {
 	})
 }
 
+func writeOverloaded(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.Itoa(len(overloadPayload)))
+	w.WriteHeader(http.StatusServiceUnavailable)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(overloadPayload)
+	}
+}

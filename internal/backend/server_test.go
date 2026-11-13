@@ -24,6 +24,8 @@ func TestRunOccupiedPort(t *testing.T) {
 		ID:              "backend-a",
 		ListenAddr:      addr,
 		ShutdownTimeout: time.Second,
+		Workers:         2,
+		QueueCapacity:   4,
 	}, slog.New(slog.DiscardHandler))
 
 	var opErr *net.OpError
@@ -37,7 +39,9 @@ func TestServeUnexpectedError(t *testing.T) {
 	if err := listener.Close(); err != nil {
 		t.Fatal(err)
 	}
-	err := serve(t.Context(), &http.Server{}, listener, time.Second, slog.New(slog.DiscardHandler))
+	pool := NewPool(2, 4, nil)
+	t.Cleanup(pool.Close)
+	err := serve(t.Context(), &http.Server{}, listener, pool, time.Second, slog.New(slog.DiscardHandler))
 	if !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), "serve HTTP") {
 		t.Fatalf("serve() error = %v, want wrapped listener error", err)
 	}
@@ -47,9 +51,11 @@ func TestServeCanceledBeforeStart(t *testing.T) {
 	listener := listenLoopback(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+	pool := NewPool(2, 4, nil)
+	t.Cleanup(pool.Close)
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, &http.Server{}, listener, time.Second, slog.New(slog.DiscardHandler))
+		done <- serve(ctx, &http.Server{}, listener, pool, time.Second, slog.New(slog.DiscardHandler))
 	}()
 	if err := waitFor(t, done); err != nil {
 		t.Fatalf("serve() error = %v, want clean shutdown", err)
@@ -70,7 +76,8 @@ func TestServeGracefulShutdown(t *testing.T) {
 		case <-r.Context().Done():
 		}
 	})}
-	stop, done, request := startRequest(t, listener, server, testTimeout)
+	pool := NewPool(2, 4, nil)
+	stop, done, request := startRequest(t, listener, server, pool, testTimeout)
 	waitFor(t, entered)
 	stop()
 	waitFor(t, listener.closed)
@@ -97,7 +104,8 @@ func TestServeShutdownTimeout(t *testing.T) {
 		<-r.Context().Done()
 		close(exited)
 	})}
-	stop, done, request := startRequest(t, listenLoopback(t), server, 50*time.Millisecond)
+	pool := NewPool(2, 4, nil)
+	stop, done, request := startRequest(t, listenLoopback(t), server, pool, 50*time.Millisecond)
 	waitFor(t, entered)
 	stop()
 
@@ -125,6 +133,8 @@ func TestRunLifecycle(t *testing.T) {
 		ID:              "backend-lifecycle",
 		ListenAddr:      "127.0.0.1:0",
 		ShutdownTimeout: testTimeout,
+		Workers:         2,
+		QueueCapacity:   4,
 	}
 
 	done := make(chan error, 1)
@@ -177,7 +187,6 @@ func TestRunLifecycle(t *testing.T) {
 
 func verifyListenerClosed(t *testing.T, addr string) {
 	t.Helper()
-	// Attempt to connect to the previously bound address; connection should be refused or listener bound
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("failed to bind to previously closed address %s: %v", addr, err)
@@ -238,12 +247,12 @@ type requestResult struct {
 	err  error
 }
 
-func startRequest(t *testing.T, listener net.Listener, server *http.Server, timeout time.Duration) (context.CancelFunc, <-chan error, <-chan requestResult) {
+func startRequest(t *testing.T, listener net.Listener, server *http.Server, pool *Pool, timeout time.Duration) (context.CancelFunc, <-chan error, <-chan requestResult) {
 	t.Helper()
 	ctx, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, server, listener, timeout, slog.New(slog.DiscardHandler)) }()
+	go func() { done <- serve(ctx, server, listener, pool, timeout, slog.New(slog.DiscardHandler)) }()
 
 	client := &http.Client{Timeout: testTimeout}
 	request := make(chan requestResult, 1)

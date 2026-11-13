@@ -24,4 +24,3 @@ func TestRunListenError(t *testing.T) {
 		t.Fatalf("run() = %d, want 1 for occupied address error", code)
 	}
 }
-

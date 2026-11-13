@@ -11,11 +11,20 @@ import (
 	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 )
 
+const (
+	defaultWorkers       = 4
+	maxWorkers           = 1024
+	defaultQueueCapacity = 32
+	maxQueueCapacity     = 65536
+)
+
 type Config struct {
 	config.Config
 	ID              string
 	ListenAddr      string
 	ShutdownTimeout time.Duration
+	Workers         int
+	QueueCapacity   int
 }
 
 var backendID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
@@ -30,6 +39,8 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 		ID:              "backend",
 		ListenAddr:      ":8080",
 		ShutdownTimeout: 15 * time.Second,
+		Workers:         defaultWorkers,
+		QueueCapacity:   defaultQueueCapacity,
 	}
 
 	if value, ok := lookupEnv("SBR_BACKEND_ID"); ok {
@@ -61,6 +72,21 @@ func LoadConfig(lookupEnv func(string) (string, bool)) (Config, error) {
 		cfg.ShutdownTimeout = timeout
 	}
 
+	if value, ok := lookupEnv("SBR_BACKEND_WORKERS"); ok {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > maxWorkers {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_WORKERS %q: expected an integer from 1 to %d", value, maxWorkers)
+		}
+		cfg.Workers = n
+	}
+
+	if value, ok := lookupEnv("SBR_BACKEND_QUEUE_CAPACITY"); ok {
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || n > maxQueueCapacity {
+			return Config{}, fmt.Errorf("invalid SBR_BACKEND_QUEUE_CAPACITY %q: expected an integer from 0 to %d", value, maxQueueCapacity)
+		}
+		cfg.QueueCapacity = n
+	}
+
 	return cfg, nil
 }
-
