@@ -15,7 +15,11 @@ type routingPolicy interface {
 	Select(candidates []Backend) (Backend, bool)
 }
 
-func newRoutingPolicy(cfg config.ProxyConfig, tracker *requestTracker) (routingPolicy, error) {
+type observingPolicy interface {
+	observe(Observation)
+}
+
+func newRoutingPolicy(cfg config.ProxyConfig, backends []Backend, tracker *requestTracker) (routingPolicy, error) {
 	switch cfg.Policy {
 	case config.PolicyFirstEligible:
 		return firstEligiblePolicy{}, nil
@@ -33,6 +37,13 @@ func newRoutingPolicy(cfg config.ProxyConfig, tracker *requestTracker) (routingP
 			return nil, fmt.Errorf("peak EWMA decay and initial RTT must be positive")
 		}
 		return newPeakEWMAPolicy(cfg, tracker, time.Now()), nil
+	case config.PolicyUCB1:
+		return newBanditPolicy(backends, cfg.MABLatencyScale, &ucb1Algorithm{tracker: tracker})
+	case config.PolicySlidingWindowUCB:
+		if cfg.MABSWWindow <= 0 {
+			return nil, fmt.Errorf("sliding-window UCB window must be positive")
+		}
+		return newBanditPolicy(backends, cfg.MABLatencyScale, &slidingWindowUCB{tracker: tracker, size: cfg.MABSWWindow})
 	default:
 		return nil, fmt.Errorf("unsupported routing policy %q", cfg.Policy)
 	}

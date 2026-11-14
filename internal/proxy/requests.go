@@ -94,14 +94,14 @@ func requestObservation(r *http.Request) *Observation {
 	return observation
 }
 
-func forwardTracked(w http.ResponseWriter, r *http.Request, upstream http.Handler, tracker *requestTracker, index int, observation Observation, observer Observer, logger *slog.Logger) {
+func forwardTracked(w http.ResponseWriter, r *http.Request, upstream http.Handler, index int, observation Observation, finish func(int, Observation), observer Observer, logger *slog.Logger) {
 	defer func() {
 		observation.FinishedAt = time.Now()
 		observation.Duration = observation.FinishedAt.Sub(observation.StartedAt)
 		if r.Context().Err() != nil {
 			observation.Outcome = Canceled
 		}
-		tracker.finish(index)
+		finish(index, observation)
 		if observer != nil {
 			deliverObservation(observer, observation, logger)
 		}

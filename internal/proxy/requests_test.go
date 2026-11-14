@@ -96,7 +96,7 @@ func TestObservationUpstreamStatus(t *testing.T) {
 }
 
 func TestObservationGatewayFailures(t *testing.T) {
-	for _, policy := range traditionalPolicies {
+	for _, policy := range configuredPolicies {
 		t.Run(string(policy), func(t *testing.T) { testObservationGatewayFailures(t, policy) })
 	}
 }
@@ -353,7 +353,7 @@ func TestMissingUpstreamHandler(t *testing.T) {
 }
 
 func TestObservationDraining(t *testing.T) {
-	for _, policy := range traditionalPolicies {
+	for _, policy := range configuredPolicies {
 		t.Run(string(policy), func(t *testing.T) { testObservationDraining(t, policy) })
 	}
 }
@@ -415,7 +415,8 @@ func TestForwardTrackedObserver(t *testing.T) {
 			t.Fatal("missing tracker entry")
 		}
 		observation := Observation{BackendID: "backend-a", StartedAt: time.Now()}
-		forwardTracked(res, httptest.NewRequest(http.MethodGet, "/", nil), upstream, tracker, index, observation, observer, slog.New(slog.DiscardHandler))
+		finish := func(index int, _ Observation) { tracker.finish(index) }
+		forwardTracked(res, httptest.NewRequest(http.MethodGet, "/", nil), upstream, index, observation, finish, observer, slog.New(slog.DiscardHandler))
 		assertInFlight(t, tracker, "backend-a", 0)
 		if res.Code != 204 || (observerPanics && calls != 1) {
 			t.Fatalf("response = %d, callback count = %d", res.Code, calls)
@@ -444,8 +445,9 @@ func observedHandler(t *testing.T, registry *Registry, policyName config.ProxyPo
 	if err != nil {
 		t.Fatal(err)
 	}
-	tracker := newRequestTracker(registry.Snapshot())
-	policy, err := newRoutingPolicy(cfg, tracker)
+	backends := registry.Snapshot()
+	tracker := newRequestTracker(backends)
+	policy, err := newRoutingPolicy(cfg, backends, tracker)
 	if err != nil {
 		t.Fatal(err)
 	}

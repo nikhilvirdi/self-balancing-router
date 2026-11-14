@@ -11,13 +11,16 @@ import (
 )
 
 func handler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
-	if policy, ok := policy.(*peakEWMAPolicy); ok {
-		external := observer
-		observer = func(o Observation) {
-			policy.observe(o)
-			if external != nil {
-				external(o)
-			}
+	// Selection sees each reservation and, for observing policies, the release
+	// and resulting policy update together.
+	var assignmentMu sync.Mutex
+	finish := func(index int, _ Observation) { tracker.finish(index) }
+	if policy, ok := policy.(observingPolicy); ok {
+		finish = func(index int, o Observation) {
+			assignmentMu.Lock()
+			defer assignmentMu.Unlock()
+			tracker.finish(index)
+			deliverObservation(policy.observe, o, logger)
 		}
 	}
 	const (
@@ -37,8 +40,6 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 		ok(w, r)
 	})
 
-	// Publish each reservation before the next selection reads the tracker.
-	var assignmentMu sync.Mutex
 	assign := func() (*httputil.ReverseProxy, int, Observation, string) {
 		assignmentMu.Lock()
 		defer assignmentMu.Unlock()
@@ -82,7 +83,7 @@ func handler(registry *Registry, policy routingPolicy, upstreams map[string]*htt
 			routingUnavailable(w)
 			return
 		}
-		forwardTracked(w, r, upstream, tracker, index, observation, observer, logger)
+		forwardTracked(w, r, upstream, index, observation, finish, observer, logger)
 	})
 }
 

@@ -11,11 +11,13 @@ import (
 type ProxyPolicy string
 
 const (
-	PolicyFirstEligible ProxyPolicy = "first-eligible"
-	PolicyRoundRobin    ProxyPolicy = "round-robin"
-	PolicyLeastRequests ProxyPolicy = "least-requests"
-	PolicyP2C           ProxyPolicy = "p2c"
-	PolicyP2CPeakEWMA   ProxyPolicy = "p2c-peak-ewma"
+	PolicyFirstEligible    ProxyPolicy = "first-eligible"
+	PolicyRoundRobin       ProxyPolicy = "round-robin"
+	PolicyLeastRequests    ProxyPolicy = "least-requests"
+	PolicyP2C              ProxyPolicy = "p2c"
+	PolicyP2CPeakEWMA      ProxyPolicy = "p2c-peak-ewma"
+	PolicyUCB1             ProxyPolicy = "ucb1"
+	PolicySlidingWindowUCB ProxyPolicy = "sliding-window-ucb"
 )
 
 type ProxyConfig struct {
@@ -30,6 +32,8 @@ type ProxyConfig struct {
 	P2CSeed               int64
 	PeakEWMADecay         time.Duration
 	PeakEWMAInitialRTT    time.Duration
+	MABLatencyScale       time.Duration
+	MABSWWindow           int
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -47,14 +51,16 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		P2CSeed:               1,
 		PeakEWMADecay:         10 * time.Second,
 		PeakEWMAInitialRTT:    10 * time.Millisecond,
+		MABLatencyScale:       100 * time.Millisecond,
+		MABSWWindow:           1000,
 	}
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB)
 		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_P2C_SEED"); ok {
@@ -79,6 +85,20 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 			}
 			*setting.target = duration
 		}
+	}
+	if value, ok := lookupEnv("SBR_PROXY_MAB_LATENCY_SCALE"); ok {
+		scale, err := time.ParseDuration(value)
+		if err != nil || scale <= 0 {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_LATENCY_SCALE %q: expected a positive Go duration", value)
+		}
+		cfg.MABLatencyScale = scale
+	}
+	if value, ok := lookupEnv("SBR_PROXY_MAB_SW_WINDOW"); ok {
+		window, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || window <= 0 {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_SW_WINDOW %q: expected a positive integer", value)
+		}
+		cfg.MABSWWindow = window
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

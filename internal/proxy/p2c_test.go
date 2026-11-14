@@ -106,7 +106,7 @@ func TestP2CConcurrentSampling(t *testing.T) {
 
 func testP2CPolicy(t *testing.T, tracker *requestTracker, seed int64) *p2cPolicy {
 	t.Helper()
-	policy, err := newRoutingPolicy(config.ProxyConfig{Policy: config.PolicyP2C, P2CSeed: seed}, tracker)
+	policy, err := newRoutingPolicy(config.ProxyConfig{Policy: config.PolicyP2C, P2CSeed: seed}, nil, tracker)
 	if err != nil {
 		t.Fatal(err)
 	}

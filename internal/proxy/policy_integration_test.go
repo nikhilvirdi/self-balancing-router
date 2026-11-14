@@ -34,6 +34,8 @@ func TestConfiguredPolicies(t *testing.T) {
 		{"least requests", "least-requests", []string{"backend-a", "backend-a", "backend-a"}},
 		{"p2c", "p2c", p2c},
 		{"p2c peak ewma", "p2c-peak-ewma", p2c[:1]},
+		{"ucb1", "ucb1", []string{"backend-a", "backend-b"}},
+		{"sliding-window UCB", "sliding-window-ucb", []string{"backend-a", "backend-b"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			urls := identityBackends(t, 2)
@@ -103,7 +105,7 @@ func assertPolicyResponse(t *testing.T, client *http.Client, url, want string) {
 func TestPoliciesUseEligibleBackends(t *testing.T) {
 	const count = 5
 	urls := identityBackends(t, count)
-	for _, policy := range traditionalPolicies {
+	for _, policy := range configuredPolicies {
 		t.Run(string(policy), func(t *testing.T) {
 			registry, tracker, server, observations := startObservedPolicyProxy(t, policy, 1, urls...)
 			backends := registry.Snapshot()
@@ -145,9 +147,10 @@ func TestPoliciesUseEligibleBackends(t *testing.T) {
 	}
 }
 
-var traditionalPolicies = []config.ProxyPolicy{
+var configuredPolicies = []config.ProxyPolicy{
 	config.PolicyFirstEligible, config.PolicyRoundRobin, config.PolicyLeastRequests,
-	config.PolicyP2C, config.PolicyP2CPeakEWMA,
+	config.PolicyP2C, config.PolicyP2CPeakEWMA, config.PolicyUCB1,
+	config.PolicySlidingWindowUCB,
 }
 
 func TestRoundRobinForwarding(t *testing.T) {
@@ -208,6 +211,14 @@ func TestP2CConcurrentForwarding(t *testing.T) {
 
 func TestPeakEWMAConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicyP2CPeakEWMA, 103)
+}
+
+func TestUCB1ConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyUCB1, 23)
+}
+
+func TestSlidingWindowUCBConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicySlidingWindowUCB, 23)
 }
 
 func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, total int) {
