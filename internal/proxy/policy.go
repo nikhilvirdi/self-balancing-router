@@ -44,6 +44,12 @@ func newRoutingPolicy(cfg config.ProxyConfig, backends []Backend, tracker *reque
 			return nil, fmt.Errorf("sliding-window UCB window must be positive")
 		}
 		return newBanditPolicy(backends, cfg.MABLatencyScale, &slidingWindowUCB{tracker: tracker, size: cfg.MABSWWindow})
+	case config.PolicyDiscountedUCB:
+		gamma := cfg.MABDiscountFactor
+		if !(gamma > 0 && gamma < 1) {
+			return nil, fmt.Errorf("discounted UCB factor must be strictly between 0 and 1")
+		}
+		return newBanditPolicy(backends, cfg.MABLatencyScale, &discountedUCB{tracker: tracker, gamma: gamma})
 	default:
 		return nil, fmt.Errorf("unsupported routing policy %q", cfg.Policy)
 	}

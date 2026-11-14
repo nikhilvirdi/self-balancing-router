@@ -36,6 +36,7 @@ func TestConfiguredPolicies(t *testing.T) {
 		{"p2c peak ewma", "p2c-peak-ewma", p2c[:1]},
 		{"ucb1", "ucb1", []string{"backend-a", "backend-b"}},
 		{"sliding-window UCB", "sliding-window-ucb", []string{"backend-a", "backend-b"}},
+		{"discounted UCB", "discounted-ucb", []string{"backend-a", "backend-b"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			urls := identityBackends(t, 2)
@@ -150,7 +151,7 @@ func TestPoliciesUseEligibleBackends(t *testing.T) {
 var configuredPolicies = []config.ProxyPolicy{
 	config.PolicyFirstEligible, config.PolicyRoundRobin, config.PolicyLeastRequests,
 	config.PolicyP2C, config.PolicyP2CPeakEWMA, config.PolicyUCB1,
-	config.PolicySlidingWindowUCB,
+	config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB,
 }
 
 func TestRoundRobinForwarding(t *testing.T) {
@@ -219,6 +220,10 @@ func TestUCB1ConcurrentForwarding(t *testing.T) {
 
 func TestSlidingWindowUCBConcurrentForwarding(t *testing.T) {
 	testConcurrentPolicyForwarding(t, config.PolicySlidingWindowUCB, 23)
+}
+
+func TestDiscountedUCBConcurrentForwarding(t *testing.T) {
+	testConcurrentPolicyForwarding(t, config.PolicyDiscountedUCB, 23)
 }
 
 func testConcurrentPolicyForwarding(t *testing.T, policy config.ProxyPolicy, total int) {

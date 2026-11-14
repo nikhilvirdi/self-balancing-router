@@ -33,11 +33,9 @@ type slidingWindowUCB struct {
 }
 
 func (a *slidingWindowUCB) Select(arms []banditArm[windowedArmState]) (Backend, bool) {
-	return selectUCB(arms, a.tracker, uint64(len(a.window)), func(state windowedArmState) ucb1State {
-		return ucb1State{
-			rewardSum:    min(float64(state.observations), max(0, state.rewardSum+state.correction)),
-			observations: state.observations,
-		}
+	return selectUCB(arms, a.tracker, func(state windowedArmState) (float64, bool) {
+		state.rewardSum = min(float64(state.observations), max(0, state.rewardSum+state.correction))
+		return state.selectionScore(uint64(len(a.window)))
 	})
 }
 

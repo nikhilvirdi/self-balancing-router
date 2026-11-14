@@ -15,18 +15,20 @@ type ucb1Algorithm struct {
 }
 
 func (a *ucb1Algorithm) Select(arms []banditArm[ucb1State]) (Backend, bool) {
-	return selectUCB(arms, a.tracker, a.total, func(state ucb1State) ucb1State { return state })
+	return selectUCB(arms, a.tracker, func(state ucb1State) (float64, bool) {
+		return state.selectionScore(a.total)
+	})
 }
 
-func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, total uint64, stats func(S) ucb1State) (Backend, bool) {
+func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, score func(S) (float64, bool)) (Backend, bool) {
 	var best, cold Backend
 	var bestScore float64
 	minPending := math.MaxInt
 	// A zero-pending cold arm gets its first try. When all cold arms have
 	// pending work, use the best observed arm or spread load among cold arms.
 	for _, arm := range arms {
-		state := stats(arm.State)
-		if state.observations == 0 {
+		value, observed := score(arm.State)
+		if !observed {
 			pending, ok := tracker.InFlight(arm.Backend.ID)
 			if !ok {
 				continue
@@ -39,9 +41,8 @@ func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, total uint64
 			}
 			continue
 		}
-		score := state.score(total)
-		if best.ID == "" || score > bestScore {
-			best, bestScore = arm.Backend, score
+		if best.ID == "" || value > bestScore {
+			best, bestScore = arm.Backend, value
 		}
 	}
 	if best.ID != "" {
@@ -62,8 +63,18 @@ func (a *ucb1Algorithm) Update(arms map[string]ucb1State, feedback banditFeedbac
 	}
 }
 
+func (s ucb1State) selectionScore(total uint64) (float64, bool) {
+	if s.observations == 0 {
+		return 0, false
+	}
+	return s.score(total), true
+}
+
 // score is used only after an arm has at least one completed reward.
 func (s ucb1State) score(total uint64) float64 {
-	n := float64(s.observations)
-	return s.rewardSum/n + math.Sqrt(2*math.Log(float64(total))/n)
+	return ucbScore(s.rewardSum, float64(s.observations), float64(total))
+}
+
+func ucbScore(rewardSum, observations, total float64) float64 {
+	return rewardSum/observations + math.Sqrt(2*math.Log(total)/observations)
 }

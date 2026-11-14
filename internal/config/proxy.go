@@ -18,6 +18,7 @@ const (
 	PolicyP2CPeakEWMA      ProxyPolicy = "p2c-peak-ewma"
 	PolicyUCB1             ProxyPolicy = "ucb1"
 	PolicySlidingWindowUCB ProxyPolicy = "sliding-window-ucb"
+	PolicyDiscountedUCB    ProxyPolicy = "discounted-ucb"
 )
 
 type ProxyConfig struct {
@@ -34,6 +35,7 @@ type ProxyConfig struct {
 	PeakEWMAInitialRTT    time.Duration
 	MABLatencyScale       time.Duration
 	MABSWWindow           int
+	MABDiscountFactor     float64
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -53,14 +55,15 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		PeakEWMAInitialRTT:    10 * time.Millisecond,
 		MABLatencyScale:       100 * time.Millisecond,
 		MABSWWindow:           1000,
+		MABDiscountFactor:     0.99,
 	}
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB)
 		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_P2C_SEED"); ok {
@@ -99,6 +102,13 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_SW_WINDOW %q: expected a positive integer", value)
 		}
 		cfg.MABSWWindow = window
+	}
+	if value, ok := lookupEnv("SBR_PROXY_MAB_DISCOUNT_FACTOR"); ok {
+		factor, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || !(factor > 0 && factor < 1) {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_DISCOUNT_FACTOR %q: expected a finite number strictly between 0 and 1", value)
+		}
+		cfg.MABDiscountFactor = factor
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

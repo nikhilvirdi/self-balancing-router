@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 )
 
 type recordingBandit struct{}
@@ -102,6 +105,94 @@ func TestBanditConcurrentUpdates(t *testing.T) {
 }
 
 func TestBanditHTTPFeedback(t *testing.T) {
+	testBanditHTTPFeedback(t, func(registry *Registry, _ *requestTracker) (routingPolicy, func([]Observation)) {
+		p := testBanditPolicy(t, registry)
+		return p, func(samples []Observation) {
+			for _, backend := range registry.Snapshot() {
+				var want []banditFeedback
+				for _, sample := range samples {
+					if sample.BackendID == backend.ID {
+						want = append(want, banditFeedback{sample.BackendID, sample.FinishedAt, expectedTestReward(sample)})
+					}
+				}
+				if got := p.arms[backend.ID]; !slices.Equal(got, want) {
+					t.Fatalf("arm %s feedback = %v, want %v", backend.ID, got, want)
+				}
+			}
+		}
+	})
+}
+
+func TestMABHTTPFeedback(t *testing.T) {
+	for _, name := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB} {
+		t.Run(string(name), func(t *testing.T) {
+			testBanditHTTPFeedback(t, func(registry *Registry, tracker *requestTracker) (routingPolicy, func([]Observation)) {
+				const window, gamma = 3, 0.5
+				backends := registry.Snapshot()
+				policy, err := newRoutingPolicy(config.ProxyConfig{
+					Policy: name, MABLatencyScale: time.Second, MABSWWindow: window, MABDiscountFactor: gamma,
+				}, backends, tracker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return policy, func(samples []Observation) {
+					for _, backend := range backends {
+						var count, sum, total float64
+						var step uint64
+						for i, sample := range samples {
+							weight := 1.0
+							switch name {
+							case config.PolicySlidingWindowUCB:
+								if i < len(samples)-window {
+									continue
+								}
+							case config.PolicyDiscountedUCB:
+								weight = math.Ldexp(1, i-len(samples)+1)
+							}
+							total += weight
+							if sample.BackendID == backend.ID {
+								count += weight
+								sum += weight * expectedTestReward(sample)
+								step = uint64(i + 1)
+							}
+						}
+						id := backend.ID
+						switch p := policy.(type) {
+						case *banditPolicy[ucb1State]:
+							if got := p.arms[id]; got.observations != uint64(count) || math.Abs(got.rewardSum-sum) > 1e-15 || p.algorithm.(*ucb1Algorithm).total != uint64(total) {
+								t.Fatalf("arm %s = %+v, want count %g and sum %g, global count %g", id, got, count, sum, total)
+							}
+						case *banditPolicy[windowedArmState]:
+							assertWindowArm(t, p, id, uint64(count), sum)
+							if got := len(p.algorithm.(*slidingWindowUCB).window); got != int(total) {
+								t.Fatalf("window length = %d, want %g", got, total)
+							}
+						case *banditPolicy[discountedArmState]:
+							a := p.algorithm.(*discountedUCB)
+							state := p.arms[id]
+							aged := state.at(a.step, gamma)
+							if state.step != step || aged.observations != count || math.Abs(aged.rewardSum-sum) > 1e-15 || a.total != total || a.step != uint64(len(samples)) {
+								t.Fatalf("arm %s at step %d = %+v, total %g, want count %g, sum %g, total %g, last step %d", id, a.step, aged, a.total, count, sum, total, step)
+							}
+						default:
+							t.Fatalf("unexpected bandit policy %T", policy)
+						}
+					}
+				}
+			})
+		})
+	}
+}
+
+func expectedTestReward(sample Observation) float64 {
+	if sample.UpstreamStatus == http.StatusOK {
+		return 1 / (1 + float64(sample.Duration)/float64(time.Second))
+	}
+	return 0
+}
+
+func testBanditHTTPFeedback(t *testing.T, makePolicy func(*Registry, *requestTracker) (routingPolicy, func([]Observation))) {
+	t.Helper()
 	holding, release, cancelEntered := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Keep the body pending without triggering the upstream header timeout.
@@ -137,19 +228,22 @@ func TestBanditHTTPFeedback(t *testing.T) {
 		t.Fatal(err)
 	}
 	setHealth(t, registry, "backend-c", Unhealthy)
-	p := testBanditPolicy(t, registry)
 	tracker := newRequestTracker(registry.Snapshot())
+	policy, check := makePolicy(registry, tracker)
 	observations := make(chan Observation, 8)
-	server := httptest.NewServer(observedPolicyHandler(t, registry, tracker, p, 500*time.Millisecond, func(o Observation) { observations <- o }))
+	server := httptest.NewServer(observedPolicyHandler(t, registry, tracker, policy, 500*time.Millisecond, func(o Observation) { observations <- o }))
 	t.Cleanup(server.Close)
 	server.Client().Timeout = testTimeout
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	held := startObservedRequest(t, ctx, server, "/hold")
 	waitFor(t, holding)
+	assertInFlight(t, tracker, "backend-a", 1)
+	check(nil)
 	setHealth(t, registry, "backend-a", Unhealthy)
 	assertResponse(t, server, http.MethodGet, "/items", 200, "b")
 	fast := assertObservation(t, observations, "backend-b", 200, UpstreamResponse)
+	check([]Observation{fast})
 	close(release)
 	if got := waitFor(t, held); got.err != nil || got.body != "a" {
 		t.Fatalf("held response = %+v, want a", got)
@@ -177,23 +271,10 @@ func TestBanditHTTPFeedback(t *testing.T) {
 	setHealth(t, registry, "backend-c", Unhealthy)
 	assertResponse(t, server, http.MethodGet, "/items", 503, "request routing is unavailable\n")
 	assertNoObservation(t, observations)
-	for id, samples := range map[string][]Observation{
-		"backend-a": {delayed}, "backend-b": {fast, overloaded, timedOut}, "backend-c": {refused},
-	} {
-		assertInFlight(t, tracker, id, 0)
-		if len(p.arms[id]) != len(samples) {
-			t.Fatalf("arm %s has %d updates, want %d", id, len(p.arms[id]), len(samples))
-		}
-		for i, sample := range samples {
-			want := 0.0
-			if sample.UpstreamStatus == http.StatusOK {
-				want = 1 / (1 + float64(sample.Duration)/float64(time.Second))
-			}
-			if got := p.arms[id][i]; got.BackendID != id || got.FinishedAt != sample.FinishedAt || got.Reward != want {
-				t.Fatalf("arm %s update %d = %+v, want reward %v at %v", id, i, got, want, sample.FinishedAt)
-			}
-		}
+	for _, backend := range registry.Snapshot() {
+		assertInFlight(t, tracker, backend.ID, 0)
 	}
+	check([]Observation{fast, delayed, overloaded, timedOut, refused})
 }
 
 func testBanditPolicy(t *testing.T, registry *Registry) *banditPolicy[[]banditFeedback] {
