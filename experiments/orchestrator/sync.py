@@ -47,6 +47,7 @@ class SyncCoordinator:
         self.workload_start_monotonic: Optional[float] = None
         self.workload_start_wall: Optional[float] = None
         self.sync_method: str = "none"
+        self.sync_uncertainty_ms: float = 0.0
         self._lock = threading.Lock()
 
     def start_server(self) -> int:
@@ -77,9 +78,21 @@ class SyncCoordinator:
         with self._lock:
             if not self.started_event.is_set():
                 now_mono = detected_at_monotonic if detected_at_monotonic is not None else time.monotonic()
+                now_wall = time.time()
                 self.workload_start_monotonic = now_mono
-                self.workload_start_wall = wall_time if wall_time is not None else time.time()
+                self.workload_start_wall = wall_time if wall_time is not None else now_wall
                 self.sync_method = method
+
+                # Quantify synchronization uncertainty
+                if method == "stdout" and wall_time is not None:
+                    # Pipe latency between k6 iteration 0 and Python stdout consumer
+                    lag_ms = max(0.0, (now_wall - wall_time) * 1000.0)
+                    self.sync_uncertainty_ms = round(min(lag_ms, 50.0), 2)
+                elif method == "webhook":
+                    self.sync_uncertainty_ms = 2.0  # Local loopback HTTP round-trip
+                else:
+                    self.sync_uncertainty_ms = 5.0
+
                 self.started_event.set()
 
     def on_stdout_line(self, line: str) -> None:
@@ -107,8 +120,10 @@ class SyncCoordinator:
                 self.workload_start_monotonic = now_mono
                 self.workload_start_wall = time.time()
                 self.sync_method = "fallback"
+                self.sync_uncertainty_ms = round(timeout * 1000.0, 2)
                 logger.warning(
-                    "Workload synchronization timed out after %.1fs; falling back to process start time",
+                    "Workload start signal not received within %.1fs; falling back to launch time (uncertainty +/-%.1fs)",
+                    timeout,
                     timeout,
                 )
             return self.workload_start_monotonic or time.monotonic()

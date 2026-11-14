@@ -16,6 +16,7 @@ import {
   buildK6Options,
   getTimelinePhase,
   classifyResponse,
+  classify503Origin,
   extractBackendID,
   formatSummaryReport,
 } from './config.js';
@@ -254,6 +255,58 @@ describe('k6 Workload Generator Validation Suite', () => {
     assert.equal(extractBackendID(0, ''), '');
     assert.equal(extractBackendID(200, 'invalid-json'), '');
     assert.equal(extractBackendID(200, '{}'), '');
+  });
+
+  // 14. 503 Overload origin classification (backend vs proxy vs unknown)
+  test('14. Distinguishes backend overload HTTP 503 from proxy-generated HTTP 503 or unknown', () => {
+    // Backend queue full
+    assert.equal(classify503Origin(503, '{"error":"backend overloaded"}'), 'backend');
+    assert.equal(classify503Origin(503, 'backend overloaded\n'), 'backend');
+    assert.equal(classify503Origin(503, { error: 'backend overloaded' }), 'backend');
+
+    // Proxy routing unavailable
+    assert.equal(classify503Origin(503, 'request routing is unavailable\n'), 'proxy');
+    assert.equal(classify503Origin(503, { message: 'request routing is unavailable' }), 'proxy');
+
+    // Unknown or unobservable origin
+    assert.equal(classify503Origin(503, ''), 'unknown');
+    assert.equal(classify503Origin(503, null), 'unknown');
+    assert.equal(classify503Origin(503, '<html>503 Service Unavailable</html>'), 'unknown');
+
+    // Non-503 statuses return empty string
+    assert.equal(classify503Origin(200, '{"error":"backend overloaded"}'), '');
+    assert.equal(classify503Origin(500, 'request routing is unavailable'), '');
+    assert.equal(classify503Origin(0, ''), '');
+  });
+
+  // 15. Summary report includes 503 breakdown
+  test('15. Summary report formats 503 overload breakdown correctly', () => {
+    const mockData = {
+      metrics: {
+        http_reqs: { values: { count: 10, rate: 2.0 } },
+        sbr_successful_requests: { values: { count: 7 } },
+        sbr_overload_requests_503: { values: { count: 3 } },
+        sbr_backend_overload_503: { values: { count: 2 } },
+        sbr_proxy_overload_503: { values: { count: 1 } },
+        sbr_unknown_overload_503: { values: { count: 0 } },
+        dropped_iterations: { values: { count: 0 } },
+      },
+    };
+    const mockScenario = {
+      id: 'test_scenario',
+      name: 'Test Scenario',
+      duration_seconds: 10,
+      timeline: { warmup_seconds: 2, measurement_seconds: 6, cooldown_seconds: 2 },
+      workload: { stages: [{ duration: '10s', target: 5 }] },
+    };
+    const report = formatSummaryReport(mockData, mockScenario, { policy: 'round-robin' });
+    assert.equal(report.outcomes.successful_200, 7);
+    assert.equal(report.outcomes.overload_503, 3);
+    assert.deepEqual(report.outcomes.overload_503_breakdown, {
+      backend: 2,
+      proxy: 1,
+      unknown: 0,
+    });
   });
 });
 

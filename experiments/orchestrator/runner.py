@@ -61,6 +61,37 @@ def get_docker_version() -> Optional[str]:
     return None
 
 
+def get_k6_version(k6_runner: K6Runner) -> Optional[str]:
+    """Retrieves k6 version string."""
+    try:
+        method = k6_runner.resolve_execution_method()
+        if method == "local":
+            res = subprocess.run(
+                ["k6", "version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=3.0,
+            )
+            if res.returncode == 0:
+                return res.stdout.strip()
+        elif method == "docker":
+            res = subprocess.run(
+                ["docker", "run", "--rm", k6_runner.docker_image, "version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=5.0,
+            )
+            if res.returncode == 0:
+                return res.stdout.strip()
+    except Exception:
+        pass
+    return None
+
+
 def resolve_run_dir(base_dir: Path, scenario_id: str, policy: str) -> Path:
     """Finds the next sequential non-existing run directory: run-001, run-002, etc."""
     target_parent = base_dir / scenario_id / policy
@@ -120,7 +151,17 @@ class ExperimentRunner:
         start_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         git_sha = get_git_commit(self.repo_root)
         docker_ver = get_docker_version()
+        k6_ver = get_k6_version(self.k6_runner)
         k6_method = self.k6_runner.resolve_execution_method()
+
+        backend_seeds = {
+            "backend-a": trial_seed + 1,
+            "backend-b": trial_seed + 2,
+            "backend-c": trial_seed + 3,
+            "backend-d": trial_seed + 4,
+            "backend-e": trial_seed + 5,
+        }
+        backends_cfg = scenario.get("backends", {})
 
         metadata: Dict[str, Any] = {
             "scenario_id": scenario_id,
@@ -128,22 +169,47 @@ class ExperimentRunner:
             "routing_policy": policy,
             "trial_index": trial_index,
             "random_seed": trial_seed,
+            "backend_seeds": backend_seeds,
             "git_commit": git_sha,
             "versions": {
                 "python": platform.python_version(),
                 "docker": docker_ver,
+                "k6": k6_ver,
                 "k6_execution_method": k6_method,
+                "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
             },
             "start_time": start_iso,
             "valid": False,
             "failure_reason": None,
             "scenario_definition": scenario,
+            "backend_configurations": {
+                "baseline": backends_cfg,
+                "seeds": backend_seeds,
+            },
             "configuration": {
                 "proxy_port": self.config.proxy_port,
                 "admin_ports": self.config.admin_ports,
                 "compose_project": self.config.compose_project,
                 "http_timeout": self.config.http_timeout,
                 "readiness_timeout": self.config.readiness_timeout,
+                "workload": {
+                    "vus_preallocated": self.config.vus_preallocated,
+                    "vus_max": self.config.vus_max,
+                },
+            },
+            "reproducibility": {
+                "deterministic_elements": [
+                    "Workload arrival rate schedule and stage durations",
+                    "Virtual user allocation and k6 scenario definition",
+                    "Backend random seeds (SBR_BACKEND_<ID>_DELAY_SEED) governing uniform random processing jitter",
+                    "Administrative event timestamps and delay targets",
+                ],
+                "nondeterministic_elements": [
+                    "OS thread scheduling and Go runtime goroutine preemption",
+                    "Host kernel TCP/IP network stack latency and socket buffer dynamics",
+                    "Docker bridge network virtual packet switching",
+                    "Sub-millisecond timer resolution differences across operating systems",
+                ],
             },
         }
 
@@ -240,6 +306,9 @@ class ExperimentRunner:
         scheduled_events.sort(key=lambda ev: float(ev.get("timestamp_seconds", 0.0)))
 
         try:
+            # 0. Ensure clean starting state (no stale containers from interrupted runs)
+            docker_lifecycle.ensure_clean_state()
+
             # 1. Start Docker deployment
             docker_lifecycle.start()
 
@@ -425,6 +494,17 @@ class ExperimentRunner:
             "mean_scheduling_drift_seconds": (sum(drifts) / len(drifts)) if drifts else 0.0,
             "max_request_latency_seconds": max(latencies) if latencies else 0.0,
             "mean_request_latency_seconds": (sum(latencies) / len(latencies)) if latencies else 0.0,
+            "synchronization": {
+                "method": sync_coord.sync_method,
+                "uncertainty_estimate_ms": round(sync_coord.sync_uncertainty_ms, 2),
+                "description": (
+                    "Sub-millisecond k6 iteration 0 timestamp synchronized via stdout"
+                    if sync_coord.sync_method == "stdout"
+                    else "Synchronized via HTTP webhook"
+                    if sync_coord.sync_method == "webhook"
+                    else "Fallback to process launch timestamp due to sync timeout"
+                ),
+            },
         }
 
         metadata["valid"] = (len(failure_reasons) == 0)

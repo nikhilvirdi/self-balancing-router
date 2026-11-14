@@ -26,8 +26,10 @@ REQUESTS_CSV_COLUMNS: List[str] = [
     "is_overload",
     "is_transport_error",
     "backend_id",
+    "overload_origin",
     "phase",
     "interval",
+    "spans_boundary",
     "scenario_id",
     "routing_policy",
     "trial_index",
@@ -38,6 +40,13 @@ VALID_OUTCOMES: Set[str] = {
     "overload_503",
     "http_error",
     "transport_error",
+}
+
+VALID_OVERLOAD_ORIGINS: Set[str] = {
+    "backend",
+    "proxy",
+    "unknown",
+    "",
 }
 
 VALID_PHASES: Set[str] = {
@@ -207,10 +216,12 @@ class DataCollector:
         trial_index: int,
         dropped_iterations: int = 0,
         keep_raw_metrics: bool = False,
+        raw_metrics_mode: str = "gz",
         dry_run: bool = False,
     ) -> Tuple[Path, Path, Dict[str, Any]]:
         """
         Processes raw metrics into requests.csv and metrics.json using streaming execution.
+        Preserves raw metrics with optional compression (gz, json, or none).
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         requests_csv_path = output_dir / "requests.csv"
@@ -240,6 +251,14 @@ class DataCollector:
         status_distribution: Dict[str, int] = {}
         outcome_distribution: Dict[str, int] = {}
         backend_distribution: Dict[str, int] = {}
+        overload_origin_distribution: Dict[str, int] = {
+            "backend": 0,
+            "proxy": 0,
+            "unknown": 0,
+        }
+
+        total_boundary_spanning = 0
+        interval_boundary_spanning: Dict[str, int] = {inter["name"]: 0 for inter in timeline.get_definitions()}
 
         phase_total_counts: Dict[str, int] = {"warmup": 0, "measurement": 0, "cooldown": 0}
         phase_success_counts: Dict[str, int] = {"warmup": 0, "measurement": 0, "cooldown": 0}
@@ -296,15 +315,18 @@ class DataCollector:
 
                         duration_val = float(data.get("value", 0.0))
                         time_str = data.get("time", "")
-                        req_wall = parse_iso_to_epoch(time_str)
+                        req_completion_wall = parse_iso_to_epoch(time_str)
+                        duration_s = duration_val / 1000.0
+                        req_dispatch_wall = req_completion_wall - duration_s
 
-                        if first_req_wall is None or req_wall < first_req_wall:
-                            first_req_wall = req_wall
-                        if last_req_wall is None or req_wall > last_req_wall:
-                            last_req_wall = req_wall
+                        if first_req_wall is None or req_dispatch_wall < first_req_wall:
+                            first_req_wall = req_dispatch_wall
+                        if last_req_wall is None or req_completion_wall > last_req_wall:
+                            last_req_wall = req_completion_wall
 
-                        elapsed = max(0.0, req_wall - workload_start_wall) if workload_start_wall > 0 else 0.0
-                        elapsed_rounded = round(elapsed, 6)
+                        elapsed_completion = max(0.0, req_completion_wall - workload_start_wall) if workload_start_wall > 0 else 0.0
+                        elapsed_dispatch = max(0.0, req_dispatch_wall - workload_start_wall) if workload_start_wall > 0 else 0.0
+                        elapsed_rounded = round(elapsed_completion, 6)
 
                         # Outcome classification
                         outcome = tags.get("outcome")
@@ -323,11 +345,36 @@ class DataCollector:
                         is_transport = (status_code == 0 or outcome == "transport_error")
 
                         backend_id = tags.get("backend_id", "")
+                        overload_origin = tags.get("overload_origin", "")
+                        if is_overload and not overload_origin:
+                            err_str = tags.get("error", "")
+                            if "backend overloaded" in err_str:
+                                overload_origin = "backend"
+                            elif "request routing is unavailable" in err_str:
+                                overload_origin = "proxy"
+                            else:
+                                overload_origin = "unknown"
+                        elif not is_overload:
+                            overload_origin = ""
+
                         phase = tags.get("phase", "measurement")
                         if phase not in VALID_PHASES:
                             phase = "measurement"
 
-                        interval_name = timeline.get_interval_name(elapsed)
+                        # Timing interval alignment:
+                        # Dispatch interval reflects the system state when the routing decision was made.
+                        interval_dispatch = timeline.get_interval_name(elapsed_dispatch)
+                        interval_completion = timeline.get_interval_name(elapsed_completion)
+                        spans_boundary = (interval_dispatch != interval_completion)
+                        interval_name = interval_dispatch
+
+                        if spans_boundary:
+                            total_boundary_spanning += 1
+                            interval_boundary_spanning[interval_name] = interval_boundary_spanning.get(interval_name, 0) + 1
+
+                        if is_overload:
+                            orig_key = overload_origin if overload_origin in overload_origin_distribution else "unknown"
+                            overload_origin_distribution[orig_key] += 1
 
                         # Write row to requests.csv
                         writer.writerow([
@@ -341,8 +388,10 @@ class DataCollector:
                             is_overload,
                             is_transport,
                             backend_id,
+                            overload_origin,
                             phase,
                             interval_name,
+                            spans_boundary,
                             scenario_id,
                             policy,
                             trial_index,
@@ -379,12 +428,26 @@ class DataCollector:
                             interval_success_counts[interval_name] += 1
                             interval_durations_successful[interval_name].append(duration_val)
 
-        # Remove raw metrics file if not requested to keep
-        if not keep_raw_metrics and raw_metrics_path.is_file():
-            try:
-                raw_metrics_path.unlink()
-            except Exception as e:
-                logger.debug("Failed to unlink raw metrics file: %s", e)
+        # Handle raw metrics preservation (gzip compression by default, or uncompressed json, or none)
+        if raw_metrics_path.is_file():
+            if raw_metrics_mode == "gz":
+                gz_path = output_dir / "raw-metrics.json.gz"
+                try:
+                    import gzip
+                    import shutil
+                    with open(raw_metrics_path, "rb") as f_in, gzip.open(gz_path, "wb", compresslevel=6) as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                    raw_metrics_path.unlink()
+                    logger.debug("Preserved compressed raw k6 metrics: %s", gz_path.name)
+                except Exception as e:
+                    logger.warning("Failed to compress raw metrics file: %s", e)
+            elif raw_metrics_mode == "json" or keep_raw_metrics:
+                logger.debug("Preserved uncompressed raw k6 metrics: %s", raw_metrics_path.name)
+            elif raw_metrics_mode == "none":
+                try:
+                    raw_metrics_path.unlink()
+                except Exception as e:
+                    logger.debug("Failed to unlink raw metrics file: %s", e)
 
         # If requests.csv did not get written (empty raw metrics), ensure headers exist
         if not requests_csv_path.is_file():
@@ -451,6 +514,7 @@ class DataCollector:
                 "duration_seconds": i_dur,
                 "total_requests": i_tot,
                 "successful_requests": i_succ,
+                "boundary_spanning_requests": interval_boundary_spanning.get(i_name, 0),
                 "success_rate": round(i_rate, 4),
                 "throughput_rps": round(i_thru, 2),
                 "successful_latency_ms": compute_latency_stats(interval_durations_successful.get(i_name, [])),
@@ -473,12 +537,19 @@ class DataCollector:
                 "valid_offered_load": (dropped_iterations == 0),
                 "total_throughput_rps": round(total_throughput, 2),
                 "successful_throughput_rps": round(successful_throughput, 2),
+                "timing_semantics": {
+                    "request_timestamp_event": "completion",
+                    "dispatch_derivation": "completion_timestamp - (duration_ms / 1000.0)",
+                    "interval_alignment_reference": "dispatch",
+                    "total_boundary_spanning_requests": total_boundary_spanning,
+                },
             },
             "outcomes": {
                 "total_requests": total_requests,
                 "successful_requests": successful_count,
                 "success_rate": round(success_rate, 4),
                 "overload_503_count": overload_count,
+                "overload_503_breakdown": overload_origin_distribution,
                 "overload_503_rate": round(float(overload_count / total_requests) if total_requests > 0 else 0.0, 4),
                 "http_error_count": http_err_count,
                 "http_error_rate": round(float(http_err_count / total_requests) if total_requests > 0 else 0.0, 4),
@@ -604,13 +675,37 @@ class DataValidator:
             if m_dropped > 0:
                 errors.append(f"Workload integrity violated: {m_dropped} dropped iterations in metrics.json")
 
-            # Check latency non-negativity and finiteness
+            # Check latency non-negativity, finiteness, and plausible unit bounds (<= 600,000ms / 10min)
             for lat_cat in ["successful_requests", "all_requests"]:
                 lat_obj = metrics.get("latency_ms", {}).get(lat_cat, {})
                 for k in ["mean", "min", "p50", "p90", "p95", "p99", "max"]:
                     v = lat_obj.get(k, 0.0)
                     if not math.isfinite(v) or v < 0.0:
                         errors.append(f"Invalid {lat_cat} latency '{k}': {v}")
+                    elif v > 600000.0:
+                        errors.append(f"Implausible {lat_cat} latency '{k}' exceeding 600s: {v}ms")
+
+            # Validate distributions sum to total_requests
+            outcomes_sec = metrics.get("outcomes", {})
+            st_dist = outcomes_sec.get("status_distribution", {})
+            if st_dist and metrics_total is not None and sum(st_dist.values()) != metrics_total:
+                errors.append(
+                    f"Status distribution sum ({sum(st_dist.values())}) does not equal total_requests ({metrics_total})"
+                )
+
+            ov_breakdown = outcomes_sec.get("overload_503_breakdown", {})
+            ov_total = outcomes_sec.get("overload_503_count", 0)
+            if ov_breakdown and sum(ov_breakdown.values()) != ov_total:
+                errors.append(
+                    f"Overload 503 breakdown sum ({sum(ov_breakdown.values())}) does not equal overload_503_count ({ov_total})"
+                )
+
+            succ_count = outcomes_sec.get("successful_requests", 0)
+            succ_lat_count = metrics.get("latency_ms", {}).get("successful_requests", {}).get("count", 0)
+            if succ_count != succ_lat_count:
+                errors.append(
+                    f"Successful latency sample count ({succ_lat_count}) does not match successful_requests ({succ_count})"
+                )
         except Exception as e:
             errors.append(f"Malformed metrics.json: {e}")
 
@@ -636,6 +731,9 @@ class DataValidator:
                         if not math.isfinite(dur) or dur < 0.0:
                             errors.append(f"Row {row_idx} in requests.csv has invalid duration: {dur}")
                             break
+                        if dur > 600000.0:
+                            errors.append(f"Row {row_idx} in requests.csv has implausible duration > 600s: {dur}")
+                            break
                     except ValueError:
                         errors.append(f"Row {row_idx} in requests.csv has unparseable duration: {row[3]}")
                         break
@@ -646,12 +744,33 @@ class DataValidator:
                         errors.append(f"Row {row_idx} in requests.csv has unrecognized outcome: {outcome}")
                         break
 
-                    # Identifier check
-                    if row[12] != scenario_id:
-                        errors.append(f"Row {row_idx} has mismatched scenario_id: expected {scenario_id}, got {row[12]}")
+                    # Overload origin check
+                    ov_orig = row[10]
+                    if ov_orig not in VALID_OVERLOAD_ORIGINS:
+                        errors.append(f"Row {row_idx} in requests.csv has invalid overload_origin: {ov_orig}")
                         break
-                    if row[13] != policy:
-                        errors.append(f"Row {row_idx} has mismatched policy: expected {policy}, got {row[13]}")
+
+                    # Phase check
+                    phase = row[11]
+                    if phase not in VALID_PHASES:
+                        errors.append(f"Row {row_idx} in requests.csv has invalid phase: {phase}")
+                        break
+
+                    # Spans boundary check
+                    spans_str = row[13]
+                    if spans_str not in ("True", "False"):
+                        errors.append(f"Row {row_idx} in requests.csv has invalid spans_boundary boolean: {spans_str}")
+                        break
+
+                    # Identifier check
+                    if row[14] != scenario_id:
+                        errors.append(f"Row {row_idx} has mismatched scenario_id: expected {scenario_id}, got {row[14]}")
+                        break
+                    if row[15] != policy:
+                        errors.append(f"Row {row_idx} has mismatched policy: expected {policy}, got {row[15]}")
+                        break
+                    if row[16] != str(trial_index):
+                        errors.append(f"Row {row_idx} has mismatched trial_index: expected {trial_index}, got {row[16]}")
                         break
         except Exception as e:
             errors.append(f"Failed to read requests.csv: {e}")

@@ -243,6 +243,33 @@ export function classifyResponse(status) {
 }
 
 /**
+ * Distinguishes whether an HTTP 503 originated from backend queue overload,
+ * proxy unavailability, or an unknown/unobservable source.
+ *
+ * @param {number} status - HTTP status code.
+ * @param {string|Object} [body] - Response body string or parsed JSON object.
+ * @returns {'backend' | 'proxy' | 'unknown' | ''}
+ */
+export function classify503Origin(status, body) {
+  if (status !== 503) {
+    return '';
+  }
+  if (!body) {
+    return 'unknown';
+  }
+  try {
+    const text = (typeof body === 'string') ? body : JSON.stringify(body);
+    if (text.includes('backend overloaded')) {
+      return 'backend';
+    }
+    if (text.includes('request routing is unavailable')) {
+      return 'proxy';
+    }
+  } catch (_) {}
+  return 'unknown';
+}
+
+/**
  * Safely extracts backend identity from an HTTP response if available.
  *
  * @param {number} status - HTTP response status code.
@@ -284,6 +311,9 @@ export function formatSummaryReport(data, scenario, metadata = {}) {
 
   const successReqs = getMetric('sbr_successful_requests');
   const overloadReqs = getMetric('sbr_overload_requests_503');
+  const backendOverloadReqs = getMetric('sbr_backend_overload_503');
+  const proxyOverloadReqs = getMetric('sbr_proxy_overload_503');
+  const unknownOverloadReqs = getMetric('sbr_unknown_overload_503');
   const httpErrReqs = getMetric('sbr_other_http_errors');
   const transportErrReqs = getMetric('sbr_transport_errors');
 
@@ -307,6 +337,11 @@ export function formatSummaryReport(data, scenario, metadata = {}) {
     outcomes: {
       successful_200: successReqs ? (successReqs.count || 0) : 0,
       overload_503: overloadReqs ? (overloadReqs.count || 0) : 0,
+      overload_503_breakdown: {
+        backend: backendOverloadReqs ? (backendOverloadReqs.count || 0) : 0,
+        proxy: proxyOverloadReqs ? (proxyOverloadReqs.count || 0) : 0,
+        unknown: unknownOverloadReqs ? (unknownOverloadReqs.count || 0) : 0,
+      },
       other_http_errors: httpErrReqs ? (httpErrReqs.count || 0) : 0,
       transport_errors: transportErrReqs ? (transportErrReqs.count || 0) : 0,
       error_rate: totalReqs > 0 ? (((totalReqs - (successReqs ? successReqs.count : 0)) / totalReqs) * 100).toFixed(2) + '%' : '0%',

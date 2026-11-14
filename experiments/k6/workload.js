@@ -23,6 +23,7 @@ import {
   constructTargetURL,
   getTimelinePhase,
   classifyResponse,
+  classify503Origin,
   extractBackendID,
   formatSummaryReport,
 } from './config.js';
@@ -51,6 +52,9 @@ const httpTimeout = __ENV.SBR_HTTP_TIMEOUT || '10s';
 // 4. Custom metrics to distinguish overload from normal completion
 const successfulRequests = new Counter('sbr_successful_requests');
 const overloadRequests503 = new Counter('sbr_overload_requests_503');
+const backendOverload503 = new Counter('sbr_backend_overload_503');
+const proxyOverload503 = new Counter('sbr_proxy_overload_503');
+const unknownOverload503 = new Counter('sbr_unknown_overload_503');
 const otherHttpErrors = new Counter('sbr_other_http_errors');
 const transportErrors = new Counter('sbr_transport_errors');
 
@@ -106,12 +110,14 @@ export default function () {
   const res = http.get(targetURL, params);
   const classification = classifyResponse(res.status);
   const backendID = extractBackendID(res.status, res.body);
+  const overloadOrigin = classify503Origin(res.status, res.body);
 
   // Record individual observation sample with rich diagnostic tags
   requestObservation.add(res.timings.duration, {
     status: `${res.status}`,
     outcome: classification,
     backend_id: backendID,
+    overload_origin: overloadOrigin,
     scenario: selectedScenario.id,
     phase: phase,
     policy: __ENV.SBR_PROXY_POLICY || 'unspecified',
@@ -131,6 +137,13 @@ export default function () {
       overloadRequests503.add(1, tags);
       overloadRate503.add(1, tags);
       successRate.add(0, tags);
+      if (overloadOrigin === 'backend') {
+        backendOverload503.add(1, tags);
+      } else if (overloadOrigin === 'proxy') {
+        proxyOverload503.add(1, tags);
+      } else {
+        unknownOverload503.add(1, tags);
+      }
       break;
     case 'http_error':
       otherHttpErrors.add(1, tags);

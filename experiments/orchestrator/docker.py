@@ -76,6 +76,14 @@ class DockerLifecycle:
             err = proc.stderr.strip() or proc.stdout.strip()
             raise RuntimeError(f"Failed to start Docker Compose project '{self.project}': {err}")
 
+    def ensure_clean_state(self, timeout: float = 30.0) -> None:
+        """
+        Ensures an isolated, clean starting state by removing any lingering containers,
+        volumes, or networks from previously aborted trials with this compose project name.
+        """
+        logger.info("Verifying clean Docker environment for project '%s'...", self.project)
+        self.stop(timeout=timeout)
+
     def stop(self, timeout: float = 30.0) -> None:
         """Stops and tears down containers and networks owned by this Compose project."""
         cmd = self._base_cmd() + ["down", "-v", "--remove-orphans"]

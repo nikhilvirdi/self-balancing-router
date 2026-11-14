@@ -179,6 +179,7 @@ class TestDataCollectionAndExport(unittest.TestCase):
                         "status": "503",
                         "outcome": "overload_503",
                         "backend_id": "",
+                        "overload_origin": "backend",
                         "phase": "measurement",
                     },
                 },
@@ -234,8 +235,10 @@ class TestDataCollectionAndExport(unittest.TestCase):
         self.assertEqual(rows[1][7], "False")
         self.assertEqual(rows[1][8], "False")
         self.assertEqual(rows[1][9], "backend-a")
-        self.assertEqual(rows[1][10], "warmup")
-        self.assertEqual(rows[1][11], "baseline")
+        self.assertEqual(rows[1][10], "")
+        self.assertEqual(rows[1][11], "warmup")
+        self.assertEqual(rows[1][12], "baseline")
+        self.assertEqual(rows[1][13], "False")
 
         # Row 2: 503 overload
         self.assertEqual(rows[3][4], "503")
@@ -244,8 +247,10 @@ class TestDataCollectionAndExport(unittest.TestCase):
         self.assertEqual(rows[3][7], "True")
         self.assertEqual(rows[3][8], "False")
         self.assertEqual(rows[3][9], "")
-        self.assertEqual(rows[3][10], "measurement")
-        self.assertEqual(rows[3][11], "degradation:backend-b")
+        self.assertEqual(rows[3][10], "backend")
+        self.assertEqual(rows[3][11], "measurement")
+        self.assertEqual(rows[3][12], "degradation:backend-b")
+        self.assertEqual(rows[3][13], "False")
 
         # Row 3: transport error
         self.assertEqual(rows[4][4], "0")
@@ -254,12 +259,15 @@ class TestDataCollectionAndExport(unittest.TestCase):
         self.assertEqual(rows[4][7], "False")
         self.assertEqual(rows[4][8], "True")
         self.assertEqual(rows[4][9], "")
-        self.assertEqual(rows[4][10], "cooldown")
+        self.assertEqual(rows[4][10], "")
+        self.assertEqual(rows[4][11], "cooldown")
+        self.assertEqual(rows[4][13], "False")
 
         # Verify metrics.json
         self.assertEqual(metrics_data["outcomes"]["total_requests"], 4)
         self.assertEqual(metrics_data["outcomes"]["successful_requests"], 2)
         self.assertEqual(metrics_data["outcomes"]["overload_503_count"], 1)
+        self.assertEqual(metrics_data["outcomes"]["overload_503_breakdown"]["backend"], 1)
         self.assertEqual(metrics_data["outcomes"]["transport_error_count"], 1)
         self.assertEqual(metrics_data["outcomes"]["success_rate"], 0.5)
 
@@ -362,16 +370,23 @@ class TestDataCollectionAndExport(unittest.TestCase):
         with open(run_dir / "requests.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(REQUESTS_CSV_COLUMNS)
-            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, 25.0, 200, "success", True, False, False, "backend-a", "measurement", "steady_state", "scenario_1_homogeneous", "round-robin", 1])
-            writer.writerow([1, "2023-11-14T22:13:22Z", 2.0, 26.0, 200, "success", True, False, False, "backend-b", "measurement", "steady_state", "scenario_1_homogeneous", "round-robin", 1])
+            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, 25.0, 200, "success", True, False, False, "backend-a", "", "measurement", "steady_state", False, "scenario_1_homogeneous", "round-robin", 1])
+            writer.writerow([1, "2023-11-14T22:13:22Z", 2.0, 26.0, 200, "success", True, False, False, "backend-b", "", "measurement", "steady_state", False, "scenario_1_homogeneous", "round-robin", 1])
 
         with open(run_dir / "metrics.json", "w", encoding="utf-8") as f:
             json.dump({
                 "trial_metadata": {"scenario_id": "scenario_1_homogeneous", "routing_policy": "round-robin"},
                 "workload_integrity": {"total_requests": 2, "dropped_iterations": 0},
+                "outcomes": {
+                    "total_requests": 2,
+                    "successful_requests": 2,
+                    "overload_503_count": 0,
+                    "overload_503_breakdown": {"backend": 0, "proxy": 0, "unknown": 0},
+                    "status_distribution": {"200": 2},
+                },
                 "latency_ms": {
-                    "successful_requests": {"mean": 25.5, "min": 25.0, "p50": 25.5, "p90": 25.9, "p95": 25.95, "p99": 25.99, "max": 26.0},
-                    "all_requests": {"mean": 25.5, "min": 25.0, "p50": 25.5, "p90": 25.9, "p95": 25.95, "p99": 25.99, "max": 26.0},
+                    "successful_requests": {"count": 2, "mean": 25.5, "min": 25.0, "p50": 25.5, "p90": 25.9, "p95": 25.95, "p99": 25.99, "max": 26.0},
+                    "all_requests": {"count": 2, "mean": 25.5, "min": 25.0, "p50": 25.5, "p90": 25.9, "p95": 25.95, "p99": 25.99, "max": 26.0},
                 },
             }, f)
 
@@ -427,8 +442,8 @@ class TestDataCollectionAndExport(unittest.TestCase):
         with open(run_dir / "requests.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(REQUESTS_CSV_COLUMNS)
-            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, 25.0, 200, "success", True, False, False, "backend-a", "measurement", "steady_state", "test", "round-robin", 1])
-            writer.writerow([1, "2023-11-14T22:13:22Z", 2.0, 26.0, 200, "success", True, False, False, "backend-b", "measurement", "steady_state", "test", "round-robin", 1])
+            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, 25.0, 200, "success", True, False, False, "backend-a", "", "measurement", "steady_state", False, "test", "round-robin", 1])
+            writer.writerow([1, "2023-11-14T22:13:22Z", 2.0, 26.0, 200, "success", True, False, False, "backend-b", "", "measurement", "steady_state", False, "test", "round-robin", 1])
 
         is_valid, errors = DataValidator.validate_trial(run_dir, scenario, "round-robin", 1)
         self.assertFalse(is_valid)
@@ -463,7 +478,7 @@ class TestDataCollectionAndExport(unittest.TestCase):
         with open(run_dir / "requests.csv", "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow(REQUESTS_CSV_COLUMNS)
-            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, -10.0, 200, "success", True, False, False, "backend-a", "measurement", "steady_state", "test", "round-robin", 1])
+            writer.writerow([0, "2023-11-14T22:13:21Z", 1.0, -10.0, 200, "success", True, False, False, "backend-a", "", "measurement", "steady_state", False, "test", "round-robin", 1])
 
         is_valid, errors = DataValidator.validate_trial(run_dir, scenario, "round-robin", 1)
         self.assertFalse(is_valid)
