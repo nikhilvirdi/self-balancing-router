@@ -707,6 +707,182 @@ class TestReproducibilityAndValidation(unittest.TestCase):
         self.assertEqual(idx["total_trials"], 2)
         self.assertTrue((results_dir / "INDEX.md").is_file())
 
+    # 12. Recognition and normalization of all eight routing policies
+    def test_all_eight_policies_recognized_and_normalized(self):
+        from experiments.orchestrator.config import (
+            SUPPORTED_POLICIES,
+            ValidationError,
+            normalize_policy,
+        )
+
+        expected_policies = {
+            "first-eligible",
+            "round-robin",
+            "least-requests",
+            "p2c",
+            "p2c-peak-ewma",
+            "ucb1",
+            "sliding-window-ucb",
+            "discounted-ucb",
+        }
+        self.assertEqual(SUPPORTED_POLICIES, expected_policies)
+
+        # Test canonical names and aliases
+        aliases = {
+            "ucb1": "ucb1",
+            "ucb_1": "ucb1",
+            "ucb-1": "ucb1",
+            "sliding-window-ucb": "sliding-window-ucb",
+            "sliding_window_ucb": "sliding-window-ucb",
+            "sw-ucb": "sliding-window-ucb",
+            "sw_ucb": "sliding-window-ucb",
+            "discounted-ucb": "discounted-ucb",
+            "discounted_ucb": "discounted-ucb",
+            "d-ucb": "discounted-ucb",
+            "d_ucb": "discounted-ucb",
+            "p2c": "p2c",
+            "p2c-peak-ewma": "p2c-peak-ewma",
+            "least-requests": "least-requests",
+            "round-robin": "round-robin",
+            "first-eligible": "first-eligible",
+        }
+        for alias, canonical in aliases.items():
+            self.assertEqual(normalize_policy(alias), canonical)
+
+        # Test unsupported policy raises ValidationError
+        with self.assertRaises(ValidationError):
+            normalize_policy("non-existent-bandit")
+
+    # 13. Policy-specific configuration validation
+    def test_policy_configuration_validation(self):
+        from experiments.orchestrator.config import (
+            ExperimentConfig,
+            ValidationError,
+            load_scenario,
+        )
+
+        scenario = load_scenario("scenario_1_homogeneous")
+
+        # Valid configurations
+        cfg_valid = ExperimentConfig(
+            scenario=scenario,
+            routing_policy="discounted-ucb",
+            dry_run=True,
+            mab_latency_scale="150ms",
+            mab_discount_factor=0.95,
+            mab_sw_window=500,
+            p2c_seed=12345,
+            peak_ewma_decay="15s",
+            peak_ewma_initial_rtt="5ms",
+        )
+        cfg_valid.validate()
+        env = cfg_valid.get_proxy_policy_env()
+        self.assertEqual(env["SBR_PROXY_POLICY"], "discounted-ucb")
+        self.assertEqual(env["SBR_PROXY_MAB_LATENCY_SCALE"], "150ms")
+        self.assertEqual(env["SBR_PROXY_MAB_DISCOUNT_FACTOR"], "0.95")
+        self.assertEqual(env["SBR_PROXY_MAB_SW_WINDOW"], "500")
+        self.assertEqual(env["SBR_PROXY_P2C_SEED"], "12345")
+        self.assertEqual(env["SBR_PROXY_PEAK_EWMA_DECAY"], "15s")
+        self.assertEqual(env["SBR_PROXY_PEAK_EWMA_INITIAL_RTT"], "5ms")
+
+        # Invalid mab_latency_scale (negative or zero)
+        for bad_scale in ["-10ms", "0s", "abc", ""]:
+            cfg_bad = ExperimentConfig(scenario=scenario, routing_policy="ucb1", dry_run=True, mab_latency_scale=bad_scale)
+            with self.assertRaises(ValidationError):
+                cfg_bad.validate()
+
+        # Invalid mab_sw_window (<= 0)
+        for bad_win in [0, -10]:
+            cfg_bad = ExperimentConfig(scenario=scenario, routing_policy="sliding-window-ucb", dry_run=True, mab_sw_window=bad_win)
+            with self.assertRaises(ValidationError):
+                cfg_bad.validate()
+
+        # Invalid mab_discount_factor (<= 0 or >= 1)
+        for bad_gamma in [0.0, 1.0, 1.5, -0.1]:
+            cfg_bad = ExperimentConfig(scenario=scenario, routing_policy="discounted-ucb", dry_run=True, mab_discount_factor=bad_gamma)
+            with self.assertRaises(ValidationError):
+                cfg_bad.validate()
+
+    # 14. Cleanup safety prevents deleting unrelated deployments and datasets
+    def test_cleanup_safety_protects_deployments_and_datasets(self):
+        from experiments.orchestrator.config import (
+            ExperimentConfig,
+            ValidationError,
+            load_scenario,
+        )
+        from experiments.orchestrator.runner import resolve_run_dir
+
+        scenario = load_scenario("scenario_1_homogeneous")
+
+        # Project name 'self-balancing-router' is forbidden to protect main dev deployment
+        for bad_proj in ["self-balancing-router", "default", ""]:
+            cfg = ExperimentConfig(scenario=scenario, routing_policy="round-robin", dry_run=True, compose_project=bad_proj)
+            with self.assertRaises(ValidationError) as ctx:
+                cfg.validate()
+            self.assertIn("cannot use default or primary deployment project name", str(ctx.exception))
+
+        # Unique trial resolution never overwrites or deletes existing runs
+        results_dir = Path(self.test_dir) / "safety_results"
+        r1 = resolve_run_dir(results_dir, "scenario_safety", "ucb1")
+        self.assertEqual(r1.name, "run-001")
+        (r1 / "preserved_data.txt").write_text("critical audit data", encoding="utf-8")
+
+        r2 = resolve_run_dir(results_dir, "scenario_safety", "ucb1")
+        self.assertEqual(r2.name, "run-002")
+        self.assertTrue((r1 / "preserved_data.txt").is_file())
+        self.assertEqual((r1 / "preserved_data.txt").read_text(encoding="utf-8"), "critical audit data")
+
+    # 15. Policy override generation and research journal template
+    def test_trial_policy_override_and_journal_template(self):
+        from experiments.orchestrator.config import ExperimentConfig, load_scenario
+        from experiments.orchestrator.history import ExperimentHistory
+        from experiments.orchestrator.runner import ExperimentRunner
+
+        results_dir = Path(self.test_dir) / "journal_test_results"
+        scenario = load_scenario("scenario_1_homogeneous")
+
+        config = ExperimentConfig(
+            scenario=scenario,
+            routing_policy="sliding-window-ucb",
+            output_dir=results_dir,
+            dry_run=True,
+            hypothesis="Sliding window adapts rapidly under non-stationarity",
+            note="Window size set to 200 observations",
+            mab_sw_window=200,
+            mab_latency_scale="80ms",
+        )
+        config.validate()
+
+        runner = ExperimentRunner(config)
+        trial_res = runner.run_trial(1)
+        self.assertTrue(trial_res.valid)
+
+        # Verify compose.override.yaml exists with settings
+        override_file = trial_res.run_dir / "compose.override.yaml"
+        self.assertTrue(override_file.is_file())
+        override_text = override_file.read_text(encoding="utf-8")
+        self.assertIn("SBR_PROXY_POLICY: \"sliding-window-ucb\"", override_text)
+        self.assertIn("SBR_PROXY_MAB_SW_WINDOW: \"200\"", override_text)
+        self.assertIn("SBR_PROXY_MAB_LATENCY_SCALE: \"80ms\"", override_text)
+
+        # Verify metadata.json has policy_configuration
+        meta_file = trial_res.run_dir / "metadata.json"
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        pol_cfg = meta["configuration"]["policy_configuration"]
+        self.assertEqual(pol_cfg["SBR_PROXY_POLICY"], "sliding-window-ucb")
+        self.assertEqual(pol_cfg["SBR_PROXY_MAB_SW_WINDOW"], "200")
+        self.assertEqual(pol_cfg["SBR_PROXY_MAB_LATENCY_SCALE"], "80ms")
+
+        # Verify JOURNAL.md contains the research template and logged entry with policy configuration
+        journal_file = results_dir / "JOURNAL.md"
+        self.assertTrue(journal_file.is_file())
+        journal_text = journal_file.read_text(encoding="utf-8")
+        self.assertIn("## Research Journal Entry Template", journal_text)
+        self.assertIn("### [YYYY-MM-DD HH:MM] <Investigation Title>", journal_text)
+        self.assertIn("Sliding window adapts rapidly under non-stationarity", journal_text)
+        self.assertIn("SBR_PROXY_MAB_SW_WINDOW=200", journal_text)
+
 
 if __name__ == "__main__":
     unittest.main()

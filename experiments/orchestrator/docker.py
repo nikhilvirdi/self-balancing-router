@@ -38,7 +38,8 @@ class DockerLifecycle:
     def _base_cmd(self) -> List[str]:
         cmd = ["docker", "compose", "-p", self.project]
         for cf in self.compose_files:
-            cmd.extend(["-f", str(cf)])
+            if cf.is_file():
+                cmd.extend(["-f", str(cf)])
         return cmd
 
     def is_docker_available(self) -> bool:

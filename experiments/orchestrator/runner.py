@@ -164,6 +164,7 @@ class ExperimentRunner:
             "backend-e": trial_seed + 5,
         }
         backends_cfg = scenario.get("backends", {})
+        proxy_policy_env = self.config.get_proxy_policy_env()
 
         metadata: Dict[str, Any] = {
             "scenario_id": scenario_id,
@@ -196,6 +197,7 @@ class ExperimentRunner:
                 "compose_project": self.config.compose_project,
                 "http_timeout": self.config.http_timeout,
                 "readiness_timeout": self.config.readiness_timeout,
+                "policy_configuration": proxy_policy_env,
                 "workload": {
                     "vus_preallocated": self.config.vus_preallocated,
                     "vus_max": self.config.vus_max,
@@ -228,6 +230,12 @@ class ExperimentRunner:
             trial_scenario_file = run_dir / "scenario.json"
             with open(trial_scenario_file, "w", encoding="utf-8") as f:
                 json.dump(scenario, f, indent=2)
+
+            override_file = run_dir / "compose.override.yaml"
+            override_lines = ["services:", "  proxy:", "    environment:"]
+            for k, v in sorted(proxy_policy_env.items()):
+                override_lines.append(f'      {k}: "{v}"')
+            override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
 
             events_file = run_dir / "events.json"
             with open(events_file, "w", encoding="utf-8") as f:
@@ -311,9 +319,24 @@ class ExperimentRunner:
             "SBR_BACKEND_D_DELAY_SEED": str(trial_seed + 4),
             "SBR_BACKEND_E_DELAY_SEED": str(trial_seed + 5),
         }
+        env.update(proxy_policy_env)
+
+        # Write trial-scoped compose override ensuring policy settings reach proxy
+        override_file = run_dir / "compose.override.yaml"
+        override_lines = ["services:", "  proxy:", "    environment:"]
+        for k, v in sorted(proxy_policy_env.items()):
+            override_lines.append(f'      {k}: "{v}"')
+        override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
+
+        compose_files = [
+            self.repo_root / "deployments" / "compose.yaml",
+            self.repo_root / "deployments" / "compose.experiments.yaml",
+            override_file,
+        ]
 
         docker_lifecycle = DockerLifecycle(
             compose_project=self.config.compose_project,
+            compose_files=compose_files,
             repo_root=self.repo_root,
             env=env,
         )
@@ -321,6 +344,7 @@ class ExperimentRunner:
         sync_coord = SyncCoordinator()
         events_recorded: List[EventExecutionRecord] = []
         k6_result: Optional[K6ExecutionResult] = None
+        summary_data: Optional[Dict] = None
         failure_reasons: List[str] = []
         backends_cfg = scenario.get("backends", {})
         scheduled_events = list(scenario.get("events", []))
@@ -332,7 +356,7 @@ class ExperimentRunner:
             docker_lifecycle.ensure_clean_state()
 
             # 1. Start Docker deployment
-            docker_lifecycle.start()
+            docker_lifecycle.start(build=self.config.docker_build)
 
             # 2. Wait until healthy
             docker_lifecycle.wait_until_healthy(

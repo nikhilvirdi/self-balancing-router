@@ -149,6 +149,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Scientific hypothesis being tested during this experiment evaluation round",
     )
     parser.add_argument(
+        "--p2c-seed",
+        type=int,
+        default=None,
+        help="PRNG seed for P2C arm selection (defaults to 1 or derived trial seed)",
+    )
+    parser.add_argument(
+        "--peak-ewma-decay",
+        default=None,
+        help="Peak EWMA decay duration (e.g. '10s')",
+    )
+    parser.add_argument(
+        "--peak-ewma-initial-rtt",
+        default=None,
+        help="Peak EWMA initial RTT duration (e.g. '10ms')",
+    )
+    parser.add_argument(
+        "--mab-latency-scale",
+        default=None,
+        help="MAB latency scale duration (e.g. '100ms') for reward normalization",
+    )
+    parser.add_argument(
+        "--mab-sw-window",
+        type=int,
+        default=None,
+        help="Sliding-Window UCB observation window size (e.g. 1000)",
+    )
+    parser.add_argument(
+        "--mab-discount-factor",
+        type=float,
+        default=None,
+        help="Discounted UCB discount factor gamma strictly between 0 and 1 (e.g. 0.99)",
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Force Docker Compose to rebuild container images before starting trial",
+    )
+    parser.add_argument(
         "--raw-metrics",
         choices=["gz", "json", "none"],
         default="gz",
@@ -230,6 +268,13 @@ def main(argv: List[str] = None) -> int:
             note=args.note,
             hypothesis=args.hypothesis,
             raw_metrics=args.raw_metrics,
+            p2c_seed=args.p2c_seed,
+            peak_ewma_decay=args.peak_ewma_decay,
+            peak_ewma_initial_rtt=args.peak_ewma_initial_rtt,
+            mab_latency_scale=args.mab_latency_scale,
+            mab_sw_window=args.mab_sw_window,
+            mab_discount_factor=args.mab_discount_factor,
+            docker_build=args.build,
         )
 
         config.validate()

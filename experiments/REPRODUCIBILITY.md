@@ -66,6 +66,28 @@ Experiments evaluate both stationary and non-stationary conditions using uniform
 3. **PRNG Independence:**
    Each backend process runs its own seeded `math/rand/v2` PCG generator. Two trials run with the same seed will produce identical processing jitter samples for identical request arrivals.
 
+### Supported Routing Policies and Parameter Settings
+
+The orchestrator recognizes all eight routing policies implemented in the Go reverse proxy:
+
+1. **`first-eligible`**: Static benchmark selecting the first available healthy backend.
+2. **`round-robin`**: Deterministic circular rotation across healthy backends.
+3. **`least-requests`**: Dynamic concurrency-aware routing targeting the backend with the fewest active in-flight requests.
+4. **`p2c`**: Power of Two Choices picking two random candidate backends and selecting the one with fewer in-flight requests.
+   - `--p2c-seed <int>`: PRNG seed for candidate sampling (`SBR_PROXY_P2C_SEED`, default: `1`).
+5. **`p2c-peak-ewma`**: Power of Two Choices picking two candidates and choosing the lower Peak EWMA latency $\times$ in-flight score.
+   - `--p2c-seed <int>`: PRNG seed for candidate sampling (`SBR_PROXY_P2C_SEED`, default: `1`).
+   - `--peak-ewma-decay <duration>`: Aging window for Peak EWMA latency estimates (`SBR_PROXY_PEAK_EWMA_DECAY`, default: `10s`).
+   - `--peak-ewma-initial-rtt <duration>`: Cold-start penalty RTT for unobserved backends (`SBR_PROXY_PEAK_EWMA_INITIAL_RTT`, default: `10ms`).
+6. **`ucb1`**: Stationary Multi-Armed Bandit using upper confidence bound exploration based on observed latencies:
+   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization $r_t = 1 - \frac{\text{duration}}{\text{scale}}$ clamped to $[0, 1]$ (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
+7. **`sliding-window-ucb`**: Non-stationary MAB restricting sample statistics to a fixed-size FIFO observation window:
+   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
+   - `--mab-sw-window <int>`: Number of recent observations retained per arm (`SBR_PROXY_MAB_SW_WINDOW`, default: `1000`).
+8. **`discounted-ucb`**: Non-stationary MAB using geometric discounting of past observations:
+   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
+   - `--mab-discount-factor <float>`: Discount factor $\gamma$ strictly between 0 and 1 (`SBR_PROXY_MAB_DISCOUNT_FACTOR`, default: `0.99`).
+
 ### Policy Equivalence and Fairness
 
 To guarantee that comparisons between routing policies are scientifically valid:
@@ -81,14 +103,16 @@ To guarantee that comparisons between routing policies are scientifically valid:
 Every trial creates an isolated directory:
 `experiments/results/<scenario-id>/<policy>/run-XXX/`
 
-The directory contains 7 standardized artifacts:
-1. `metadata.json` — Environment, tool versions, seeds, git SHA, and timing parameters.
+The directory contains 9 standardized artifacts:
+1. `metadata.json` — Environment, tool versions, seeds, git SHA, timing parameters, and policy configuration.
 2. `scenario.json` — Full scenario specification used for the trial.
-3. `events.json` — Administrative events planned vs actual execution records.
-4. `k6-summary.json` — Native k6 execution summary report.
-5. `k6-output.log` — Raw stdout and stderr from k6 workload generator.
-6. `requests.csv` — Timestamped request-level observations.
-7. `metrics.json` — Derived trial-level summary statistics.
+3. `compose.override.yaml` — Exact Docker Compose environment overrides injected into containers.
+4. `events.json` — Administrative events planned vs actual execution records.
+5. `k6-summary.json` — Native k6 execution summary report.
+6. `k6-output.log` — Raw stdout and stderr from k6 workload generator.
+7. `requests.csv` — Timestamped request-level observations.
+8. `metrics.json` — Derived trial-level summary statistics.
+9. `raw-metrics.json.gz` — Compressed raw diagnostic metrics export from k6.
 
 ### `requests.csv` Column Specification
 

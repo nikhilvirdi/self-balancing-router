@@ -22,3 +22,6 @@ coverage.out
 /.local-notes/
 /AGENTS.md
 /.local-notes/
+# Python bytecode and cache directories
+__pycache__/
+*.py[cod]

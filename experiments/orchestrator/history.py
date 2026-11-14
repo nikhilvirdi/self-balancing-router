@@ -227,6 +227,26 @@ class ExperimentHistory:
                 "- Measure empirical regret, queue-overflow avoidance, and latency adaptation across stationary and degraded stages.",
                 "- Compare traditional heuristics (`round-robin`, `least-requests`, `p2c`, `p2c-peak-ewma`) against Multi-Armed Bandit policies.",
                 "",
+                "## Research Journal Entry Template",
+                "Copy this template to record exploratory investigations, manual analyses, or multi-trial campaign findings:",
+                "",
+                "```markdown",
+                "### [YYYY-MM-DD HH:MM] <Investigation Title>",
+                "- **Evaluator:** <Researcher Name / Session>",
+                "- **Git Commit:** `<sha>`",
+                "- **Scenario:** `<scenario_id>`",
+                "- **Policies Evaluated:** `[round-robin, least-requests, p2c, p2c-peak-ewma, ucb1, sliding-window-ucb, discounted-ucb]`",
+                "- **Hypothesis:**",
+                "  - Expected system behavior and theoretical justification.",
+                "- **Parameter Configurations / Changes:**",
+                "  - Workload parameters: `--seed <S> --vus-preallocated <N>`",
+                "  - Policy parameters: `--mab-latency-scale <scale> --mab-sw-window <W> --mab-discount-factor <gamma>`",
+                "- **Empirical Observations:**",
+                "  - Latency trends, arm selection distributions, and queue overload events.",
+                "- **Key Findings & Conclusions:**",
+                "  - Evaluation against hypothesis and actionable conclusions.",
+                "```",
+                "",
                 "## How to Record Manual Journal Entries",
                 "When executing benchmarks, use `--hypothesis \"...\"` and `--note \"...\"` or append markdown entries below.",
                 "",
@@ -258,6 +278,11 @@ class ExperimentHistory:
 
         if entry.get("hypothesis"):
             lines.append(f"- **Hypothesis:** {entry['hypothesis']}")
+
+        pol_cfg = metadata.get("configuration", {}).get("policy_configuration")
+        if pol_cfg:
+            cfg_str = ", ".join(f"`{k}={v}`" for k, v in sorted(pol_cfg.items()))
+            lines.append(f"- **Policy Configuration:** {cfg_str}")
 
         if entry.get("note"):
             lines.append(f"- **Notes / Observations:** {entry['note']}")

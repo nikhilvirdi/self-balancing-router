@@ -33,6 +33,9 @@ SUPPORTED_POLICIES: Set[str] = {
     "least-requests",
     "p2c",
     "p2c-peak-ewma",
+    "ucb1",
+    "sliding-window-ucb",
+    "discounted-ucb",
 }
 
 POLICY_NORMALIZATION: Dict[str, str] = {
@@ -45,6 +48,17 @@ POLICY_NORMALIZATION: Dict[str, str] = {
     "p2c": "p2c",
     "p2c_peak_ewma": "p2c-peak-ewma",
     "p2c-peak-ewma": "p2c-peak-ewma",
+    "ucb1": "ucb1",
+    "ucb-1": "ucb1",
+    "ucb_1": "ucb1",
+    "sliding_window_ucb": "sliding-window-ucb",
+    "sliding-window-ucb": "sliding-window-ucb",
+    "sw_ucb": "sliding-window-ucb",
+    "sw-ucb": "sliding-window-ucb",
+    "discounted_ucb": "discounted-ucb",
+    "discounted-ucb": "discounted-ucb",
+    "d_ucb": "discounted-ucb",
+    "d-ucb": "discounted-ucb",
 }
 
 DEFAULT_PROXY_PORT = 8080
@@ -55,6 +69,24 @@ DEFAULT_ADMIN_PORTS: Dict[str, int] = {
     "backend-d": 19094,
     "backend-e": 19095,
 }
+
+GO_DURATION_REGEX = re.compile(r"^(\d+(?:\.\d+)?(ns|us|µs|ms|s|m|h))+$")
+
+
+def is_valid_go_duration(val: str) -> bool:
+    """Checks whether a string is a valid positive Go duration string."""
+    if not isinstance(val, str):
+        return False
+    val = val.strip()
+    if not val or not GO_DURATION_REGEX.match(val):
+        return False
+    num_part = re.sub(r"[^\d.]", "", val)
+    try:
+        if float(num_part) <= 0:
+            return False
+    except ValueError:
+        return False
+    return True
 
 
 class ValidationError(ValueError):
@@ -283,6 +315,13 @@ class ExperimentConfig:
     note: str = ""
     hypothesis: str = ""
     raw_metrics: str = "gz"  # 'gz', 'json', 'none'
+    p2c_seed: Optional[int] = None
+    peak_ewma_decay: Optional[str] = None
+    peak_ewma_initial_rtt: Optional[str] = None
+    mab_latency_scale: Optional[str] = None
+    mab_sw_window: Optional[int] = None
+    mab_discount_factor: Optional[float] = None
+    docker_build: bool = False
 
     def __post_init__(self):
         self.routing_policy = normalize_policy(self.routing_policy)
@@ -297,10 +336,55 @@ class ExperimentConfig:
 
     def validate(self, check_ports: bool = True) -> None:
         """Validates scenario and configuration parameters before starting infrastructure."""
+        if not self.compose_project or self.compose_project.strip() in ("self-balancing-router", "default"):
+            raise ValidationError(
+                f"Invalid compose_project '{self.compose_project}': cannot use default or primary deployment project name 'self-balancing-router' to protect existing development environments."
+            )
         validate_scenario(self.scenario)
         if not self.admin_token and not self.dry_run:
             raise ValidationError(
                 "SBR_BACKEND_ADMIN_TOKEN is required. Pass via --admin-token or set the SBR_BACKEND_ADMIN_TOKEN environment variable."
             )
+        if self.admin_token and len(self.admin_token) < 16 and not self.dry_run:
+            raise ValidationError(
+                f"SBR_BACKEND_ADMIN_TOKEN must be at least 16 characters long (got {len(self.admin_token)} characters)."
+            )
         if check_ports and not self.dry_run:
             verify_no_port_conflicts(self.proxy_port, self.admin_ports)
+
+        # Validate policy-specific configuration
+        if self.p2c_seed is not None:
+            if not isinstance(self.p2c_seed, int) or not (-9223372036854775808 <= self.p2c_seed <= 9223372036854775807):
+                raise ValidationError(f"Invalid p2c_seed {self.p2c_seed}: must be a signed 64-bit integer")
+        if self.peak_ewma_decay is not None:
+            if not is_valid_go_duration(self.peak_ewma_decay):
+                raise ValidationError(f"Invalid peak_ewma_decay '{self.peak_ewma_decay}': expected a positive Go duration string (e.g. '10s')")
+        if self.peak_ewma_initial_rtt is not None:
+            if not is_valid_go_duration(self.peak_ewma_initial_rtt):
+                raise ValidationError(f"Invalid peak_ewma_initial_rtt '{self.peak_ewma_initial_rtt}': expected a positive Go duration string (e.g. '10ms')")
+        if self.mab_latency_scale is not None:
+            if not is_valid_go_duration(self.mab_latency_scale):
+                raise ValidationError(f"Invalid mab_latency_scale '{self.mab_latency_scale}': expected a positive Go duration string (e.g. '100ms')")
+        if self.mab_sw_window is not None:
+            if not isinstance(self.mab_sw_window, int) or self.mab_sw_window <= 0:
+                raise ValidationError(f"Invalid mab_sw_window {self.mab_sw_window}: expected a positive integer")
+        if self.mab_discount_factor is not None:
+            if not isinstance(self.mab_discount_factor, (int, float)) or not (0.0 < float(self.mab_discount_factor) < 1.0):
+                raise ValidationError(f"Invalid mab_discount_factor {self.mab_discount_factor}: expected a float strictly between 0 and 1")
+
+    def get_proxy_policy_env(self) -> Dict[str, str]:
+        """Returns the policy-specific environment variables for the proxy."""
+        env: Dict[str, str] = {"SBR_PROXY_POLICY": self.routing_policy}
+        if self.p2c_seed is not None:
+            env["SBR_PROXY_P2C_SEED"] = str(self.p2c_seed)
+        if self.peak_ewma_decay is not None:
+            env["SBR_PROXY_PEAK_EWMA_DECAY"] = self.peak_ewma_decay
+        if self.peak_ewma_initial_rtt is not None:
+            env["SBR_PROXY_PEAK_EWMA_INITIAL_RTT"] = self.peak_ewma_initial_rtt
+        if self.mab_latency_scale is not None:
+            env["SBR_PROXY_MAB_LATENCY_SCALE"] = self.mab_latency_scale
+        if self.mab_sw_window is not None:
+            env["SBR_PROXY_MAB_SW_WINDOW"] = str(self.mab_sw_window)
+        if self.mab_discount_factor is not None:
+            env["SBR_PROXY_MAB_DISCOUNT_FACTOR"] = str(self.mab_discount_factor)
+        return env
