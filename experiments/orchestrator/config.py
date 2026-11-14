@@ -280,6 +280,9 @@ class ExperimentConfig:
     http_timeout: float = 5.0
     readiness_timeout: float = 30.0
     dry_run: bool = False
+    note: str = ""
+    hypothesis: str = ""
+    raw_metrics: str = "gz"  # 'gz', 'json', 'none'
 
     def __post_init__(self):
         self.routing_policy = normalize_policy(self.routing_policy)
@@ -287,6 +290,8 @@ class ExperimentConfig:
             raise ValidationError(f"Repetitions must be >= 1, got {self.repetitions}")
         if self.k6_exec not in ("auto", "local", "docker"):
             raise ValidationError(f"Invalid k6_exec mode '{self.k6_exec}': expected 'auto', 'local', or 'docker'")
+        if self.raw_metrics not in ("gz", "json", "none"):
+            raise ValidationError(f"Invalid raw_metrics mode '{self.raw_metrics}': expected 'gz', 'json', or 'none'")
         if not self.admin_token:
             self.admin_token = os.environ.get("SBR_BACKEND_ADMIN_TOKEN", "")
 

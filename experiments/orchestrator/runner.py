@@ -18,6 +18,7 @@ from .admin import AdminClient, EventExecutionRecord
 from .config import ExperimentConfig, resolve_repo_root
 from .data import DataCollector, DataValidator, IntervalTimeline
 from .docker import DockerLifecycle
+from .history import ExperimentHistory
 from .k6 import K6ExecutionResult, K6Runner
 from .sync import SyncCoordinator
 
@@ -129,6 +130,7 @@ class ExperimentRunner:
         self.config = config
         self.repo_root = resolve_repo_root()
         self.k6_runner = K6Runner(repo_root=self.repo_root, exec_mode=config.k6_exec)
+        self.history = ExperimentHistory(self.config.output_dir)
 
     def run_trial(self, trial_index: int) -> TrialResult:
         """Executes a single end-to-end experimental trial."""
@@ -181,6 +183,8 @@ class ExperimentRunner:
             "start_time": start_iso,
             "valid": False,
             "failure_reason": None,
+            "note": self.config.note or None,
+            "hypothesis": self.config.hypothesis or None,
             "scenario_definition": scenario,
             "backend_configurations": {
                 "baseline": backends_cfg,
@@ -256,6 +260,23 @@ class ExperimentRunner:
             with open(meta_file, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2)
 
+            metrics_file = run_dir / "metrics.json"
+            m_data = None
+            if metrics_file.is_file():
+                try:
+                    with open(metrics_file, "r", encoding="utf-8") as mf:
+                        m_data = json.load(mf)
+                except Exception:
+                    pass
+
+            self.history.record_trial(
+                metadata=metadata,
+                run_dir=run_dir,
+                metrics_data=m_data,
+                note=self.config.note,
+                hypothesis=self.config.hypothesis,
+            )
+
             return TrialResult(
                 trial_index=trial_index,
                 scenario_id=scenario_id,
@@ -305,6 +326,7 @@ class ExperimentRunner:
         scheduled_events = list(scenario.get("events", []))
         scheduled_events.sort(key=lambda ev: float(ev.get("timestamp_seconds", 0.0)))
 
+        interrupted = False
         try:
             # 0. Ensure clean starting state (no stale containers from interrupted runs)
             docker_lifecycle.ensure_clean_state()
@@ -460,9 +482,14 @@ class ExperimentRunner:
                 validation_reason="; ".join(failure_reasons) or "OK",
             )
 
-        except Exception as e:
-            failure_reasons.append(admin_client.redact(f"Trial execution error: {e}"))
-            logger.exception("Error during trial execution")
+        except (Exception, KeyboardInterrupt) as e:
+            if isinstance(e, KeyboardInterrupt):
+                interrupted = True
+                failure_reasons.append("Trial interrupted by user (KeyboardInterrupt)")
+                logger.warning("Trial %d interrupted by user", trial_index)
+            else:
+                failure_reasons.append(admin_client.redact(f"Trial execution error: {e}"))
+                logger.exception("Error during trial execution")
 
         finally:
             sync_coord.close()
@@ -530,6 +557,7 @@ class ExperimentRunner:
             policy=policy,
             trial_index=trial_index,
             dropped_iterations=dropped_iters,
+            raw_metrics_mode=self.config.raw_metrics,
         )
 
         # Write metadata.json (initial before validation)
@@ -556,6 +584,24 @@ class ExperimentRunner:
             with open(meta_file, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2)
 
+        # Record trial into persistent experiment history and research journal
+        metrics_file = run_dir / "metrics.json"
+        m_data = None
+        if metrics_file.is_file():
+            try:
+                with open(metrics_file, "r", encoding="utf-8") as mf:
+                    m_data = json.load(mf)
+            except Exception:
+                pass
+
+        self.history.record_trial(
+            metadata=metadata,
+            run_dir=run_dir,
+            metrics_data=m_data,
+            note=self.config.note,
+            hypothesis=self.config.hypothesis,
+        )
+
         status_str = "VALID" if metadata["valid"] else "INVALID"
         logger.info(
             "=== Trial %d completed: [%s] (drift max=%.3fs, latency max=%.3fs) ===",
@@ -564,6 +610,9 @@ class ExperimentRunner:
             metadata["timing_summary"]["max_scheduling_drift_seconds"],
             metadata["timing_summary"]["max_request_latency_seconds"],
         )
+
+        if interrupted:
+            raise KeyboardInterrupt("Trial was interrupted by user")
 
         return TrialResult(
             trial_index=trial_index,

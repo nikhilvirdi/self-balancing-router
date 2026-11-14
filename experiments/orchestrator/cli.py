@@ -139,6 +139,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Timeout in seconds for container health polling",
     )
     parser.add_argument(
+        "--note",
+        default="",
+        help="Custom observation or description to attach to trial metadata and research journal",
+    )
+    parser.add_argument(
+        "--hypothesis",
+        default="",
+        help="Scientific hypothesis being tested during this experiment evaluation round",
+    )
+    parser.add_argument(
+        "--raw-metrics",
+        choices=["gz", "json", "none"],
+        default="gz",
+        help="Raw measurement preservation mode ('gz' compressed, 'json' raw, or 'none')",
+    )
+    parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="Scans experiments/results/ and rebuilds index.json and INDEX.md from disk",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate scenario and configuration without launching containers or traffic",
@@ -175,6 +196,13 @@ def main(argv: List[str] = None) -> int:
         # Output directory
         output_dir = Path(args.output_dir) if args.output_dir else (repo_root / "experiments" / "results")
 
+        if args.rebuild_index:
+            from .history import ExperimentHistory
+            history = ExperimentHistory(output_dir)
+            discovered_count = history.scan_and_rebuild()
+            print(f"[SUCCESS] Rebuilt experiment index ({output_dir / 'index.json'} and {output_dir / 'INDEX.md'}) across {discovered_count} trials.")
+            return 0
+
         # Admin token
         token = args.admin_token or os.environ.get("SBR_BACKEND_ADMIN_TOKEN", "")
         if not token and not args.dry_run:
@@ -199,6 +227,9 @@ def main(argv: List[str] = None) -> int:
             http_timeout=args.http_timeout,
             readiness_timeout=args.readiness_timeout,
             dry_run=args.dry_run,
+            note=args.note,
+            hypothesis=args.hypothesis,
+            raw_metrics=args.raw_metrics,
         )
 
         config.validate()

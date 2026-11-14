@@ -177,3 +177,59 @@ $$t_{\text{dispatch}} = t_{\text{completion}} - \frac{\text{duration\_ms}}{1000.
 - **Interval Alignment:** Requests are assigned to experimental intervals based on **dispatch time**, reflecting the state of the system when the proxy routing decision was made.
 - **Boundary-Spanning Requests:** Requests where $t_{\text{dispatch}} < T_{\text{event}} < t_{\text{completion}}$ span an event boundary (e.g. dispatched during baseline, completed after degradation). These are explicitly tagged with `spans_boundary = True` in `requests.csv` and counted under `timing_semantics.total_boundary_spanning_requests` in `metrics.json`.
 
+---
+
+## 6. Persistent Experiment History and Research Journal
+
+The experimental infrastructure automatically maintains a permanent, IDE-accessible research catalog under `experiments/results/`.
+
+### Unique Per-Trial Directories
+Every experimental trial is assigned a non-colliding sequential directory:
+`experiments/results/<scenario-id>/<policy>/run-XXX/`
+- Existing trials are never overwritten.
+- Cleanups, container teardowns, and repeated runs preserve all previous results.
+
+### Automated Experiment Index (`index.json` & `INDEX.md`)
+The orchestrator maintains two index representations in `experiments/results/`:
+1. `index.json`: Structured, machine-readable catalog of all trials, listing timestamps, scenario IDs, routing policies, validity status, total requests, success rates, latency statistics, and relative directory paths.
+2. `INDEX.md`: A human-readable Markdown table designed for immediate viewing and navigation within VS Code, featuring direct clickable links to each trial directory.
+
+To rebuild or refresh the index across all historical runs discovered on disk:
+```powershell
+python -B scripts/run_experiment.py --rebuild-index
+```
+
+### Research Journal (`JOURNAL.md`)
+`experiments/results/JOURNAL.md` maintains a permanent log of hypotheses, configuration changes, empirical observations, and conclusions across evaluation sessions.
+- Pass `--hypothesis "..."` to record scientific expectations into trial metadata and the journal.
+- Pass `--note "..."` to attach observations or anomaly notes to the journal entry.
+- Direct Markdown editing is encouraged for multi-round analysis and post-mortem syntheses.
+
+---
+
+## 7. Raw Measurement Archiving and Backup Procedures
+
+### Raw Metrics Preservation and Gzip Compression
+k6 emits high-resolution diagnostic points (`sbr_request_observation`). To preserve complete raw data without consuming excessive disk space:
+- `--raw-metrics gz` (Default): Compresses `raw-metrics.json` into `raw-metrics.json.gz` using standard gzip (typically 90–95% compression ratio). Preserves all raw timestamps, durations, and diagnostic tags for offline reproduction while saving storage.
+- `--raw-metrics json`: Retains the full uncompressed `raw-metrics.json` file.
+- `--raw-metrics none`: Discards raw points after CSV/metrics derivation (only if storage is strictly constrained).
+
+### Keeping Results Excluded from Git
+To keep the Git repository lightweight, `experiments/results/` is excluded via the root `.gitignore`.
+
+### Backing Up and Archiving Research History
+To create an independent archive of all experimental data, indexes, and journals:
+
+#### PowerShell (Windows)
+```powershell
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+Compress-Archive -Path experiments/results -DestinationPath "experiments-archive-$timestamp.zip"
+```
+
+#### Bash / Linux / macOS
+```bash
+tar -czf "experiments-archive-$(date +%Y%m%d-%H%M%S).tar.gz" experiments/results/
+```
+
+

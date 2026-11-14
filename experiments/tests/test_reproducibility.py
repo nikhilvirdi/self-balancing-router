@@ -518,6 +518,195 @@ class TestReproducibilityAndValidation(unittest.TestCase):
 
             self.assertIn("proxy:8080", str(ctx.exception))
 
+    # 8. Experiment history index and INDEX.md table generation
+    def test_experiment_history_index_and_markdown(self):
+        from experiments.orchestrator.history import ExperimentHistory
+
+        results_dir = Path(self.test_dir) / "results_history"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        history = ExperimentHistory(results_dir)
+
+        # Record Trial 1 (PASS)
+        run_dir_1 = results_dir / "scenario_1" / "round-robin" / "run-001"
+        run_dir_1.mkdir(parents=True, exist_ok=True)
+        meta1 = {
+            "scenario_id": "scenario_1",
+            "scenario_name": "Homogeneous Backends",
+            "routing_policy": "round-robin",
+            "trial_index": 1,
+            "random_seed": 42,
+            "git_commit": "abcdef123456",
+            "valid": True,
+            "failure_reason": None,
+            "start_time": "2026-11-14T03:00:00Z",
+            "duration_seconds": 10.0,
+            "note": "Baseline benchmark",
+            "hypothesis": "Equal load distribution",
+        }
+        metrics1 = {
+            "outcomes": {"total_requests": 100, "successful_requests": 100, "success_rate": 1.0},
+            "latency_ms": {"successful_requests": {"count": 100, "mean": 15.5, "p50": 14.8, "p99": 22.1}},
+        }
+        history.record_trial(meta1, run_dir_1, metrics1, note=meta1["note"], hypothesis=meta1["hypothesis"])
+
+        # Record Trial 2 (FAIL)
+        run_dir_2 = results_dir / "scenario_1" / "round-robin" / "run-002"
+        run_dir_2.mkdir(parents=True, exist_ok=True)
+        meta2 = {
+            "scenario_id": "scenario_1",
+            "scenario_name": "Homogeneous Backends",
+            "routing_policy": "round-robin",
+            "trial_index": 2,
+            "random_seed": 43,
+            "git_commit": "abcdef123456",
+            "valid": False,
+            "failure_reason": "Dropped iterations detected: 4",
+            "start_time": "2026-11-14T03:05:00Z",
+            "duration_seconds": 10.0,
+        }
+        metrics2 = {
+            "outcomes": {"total_requests": 96, "successful_requests": 96, "success_rate": 1.0},
+            "latency_ms": {"successful_requests": {"count": 96, "mean": 18.2, "p50": 17.5, "p99": 35.0}},
+        }
+        history.record_trial(meta2, run_dir_2, metrics2)
+
+        # Verify index.json contents
+        index_data = history.load_index()
+        self.assertEqual(index_data["total_trials"], 2)
+        self.assertEqual(index_data["valid_trials"], 1)
+        self.assertEqual(index_data["invalid_trials"], 1)
+
+        # Verify INDEX.md content
+        md_text = history.index_md_path.read_text(encoding="utf-8")
+        self.assertIn("# Experiment History Index", md_text)
+        self.assertIn("**PASS**", md_text)
+        self.assertIn("*FAIL*", md_text)
+        self.assertIn("[run-001](scenario_1/round-robin/run-001/)", md_text)
+        self.assertIn("[run-002](scenario_1/round-robin/run-002/)", md_text)
+        self.assertIn("Dropped iterations detected: 4", md_text)
+
+    # 9. Research journal creation and session logging
+    def test_experiment_journal_entry(self):
+        from experiments.orchestrator.history import ExperimentHistory
+
+        results_dir = Path(self.test_dir) / "journal_test"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        history = ExperimentHistory(results_dir)
+
+        run_dir = results_dir / "sc_eval" / "p2c" / "run-001"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "scenario_id": "sc_eval",
+            "routing_policy": "p2c",
+            "trial_index": 1,
+            "random_seed": 77,
+            "git_commit": "commit777",
+            "valid": True,
+            "start_time": "2026-11-14T04:00:00Z",
+            "note": "Evaluated p2c under sudden degradation",
+            "hypothesis": "P2C will avoid degraded backend without arm inertia",
+        }
+        metrics = {
+            "outcomes": {"total_requests": 200, "successful_requests": 198, "success_rate": 0.99},
+            "latency_ms": {"successful_requests": {"count": 198, "mean": 22.4, "p50": 20.1, "p99": 45.0}},
+        }
+
+        history.record_trial(meta, run_dir, metrics, note=meta["note"], hypothesis=meta["hypothesis"])
+
+        # Verify JOURNAL.md created and updated
+        self.assertTrue(history.journal_md_path.is_file())
+        journal_text = history.journal_md_path.read_text(encoding="utf-8")
+        self.assertIn("# Experimentation Research Journal", journal_text)
+        self.assertIn("P2C will avoid degraded backend without arm inertia", journal_text)
+        self.assertIn("Evaluated p2c under sudden degradation", journal_text)
+        self.assertIn("200 total requests, 198 successful", journal_text)
+
+    # 10. Raw measurement preservation with gzip compression
+    def test_raw_metrics_compression_and_decompression(self):
+        import gzip
+
+        scenario = {
+            "id": "scenario_gzip_test",
+            "duration_seconds": 10.0,
+            "timeline": {"warmup_seconds": 2.0, "measurement_seconds": 6.0, "cooldown_seconds": 2.0},
+        }
+        timeline = IntervalTimeline(events=[], scenario=scenario)
+
+        raw_file = Path(self.test_dir) / "raw_gzip_metrics.json"
+        raw_lines = [
+            json.dumps({
+                "metric": "sbr_request_observation",
+                "type": "Point",
+                "data": {
+                    "time": f"2026-11-14T03:00:{i:02d}.000Z",
+                    "value": 15.0 + float(i),
+                    "tags": {"status": "200", "outcome": "success", "backend_id": "backend-a", "phase": "measurement"},
+                },
+            })
+            for i in range(10)
+        ]
+        raw_file.write_text("\n".join(raw_lines) + "\n", encoding="utf-8")
+
+        run_dir = Path(self.test_dir) / "run_gzip"
+        DataCollector.collect_and_export(
+            raw_metrics_path=raw_file,
+            output_dir=run_dir,
+            workload_start_wall=1700000000.0,
+            timeline=timeline,
+            scenario=scenario,
+            policy="round-robin",
+            trial_index=1,
+            raw_metrics_mode="gz",
+        )
+
+        # Verify uncompressed file was removed and compressed file exists
+        self.assertFalse(raw_file.exists())
+        gz_file = run_dir / "raw-metrics.json.gz"
+        self.assertTrue(gz_file.is_file())
+        self.assertGreater(gz_file.stat().st_size, 0)
+
+        # Decompress and verify all lines recovered intact
+        with gzip.open(gz_file, "rt", encoding="utf-8") as f:
+            recovered_lines = [line.strip() for line in f if line.strip()]
+
+        self.assertEqual(len(recovered_lines), 10)
+        first_point = json.loads(recovered_lines[0])
+        self.assertEqual(first_point["metric"], "sbr_request_observation")
+        self.assertEqual(first_point["data"]["value"], 15.0)
+
+    # 11. Scan and rebuild history across discovered trials
+    def test_scan_and_rebuild_history(self):
+        from experiments.orchestrator.history import ExperimentHistory
+
+        results_dir = Path(self.test_dir) / "scan_results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create two mock trial directories
+        for p, run in [("round-robin", "run-001"), ("least-requests", "run-001")]:
+            tdir = results_dir / "sc_scan" / p / run
+            tdir.mkdir(parents=True, exist_ok=True)
+            with open(tdir / "metadata.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "scenario_id": "sc_scan",
+                    "routing_policy": p,
+                    "trial_index": 1,
+                    "valid": True,
+                    "start_time": "2026-11-14T05:00:00Z",
+                }, f)
+            with open(tdir / "metrics.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "outcomes": {"total_requests": 50, "successful_requests": 50, "success_rate": 1.0},
+                    "latency_ms": {"successful_requests": {"count": 50, "mean": 12.0, "p50": 11.5, "p99": 20.0}},
+                }, f)
+
+        history = ExperimentHistory(results_dir)
+        count = history.scan_and_rebuild()
+        self.assertEqual(count, 2)
+
+        idx = history.load_index()
+        self.assertEqual(idx["total_trials"], 2)
+        self.assertTrue((results_dir / "INDEX.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
