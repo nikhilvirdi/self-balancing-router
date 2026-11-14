@@ -67,20 +67,34 @@ class SyncCoordinator:
             return f"http://host.docker.internal:{self.port}/start"
         return f"http://127.0.0.1:{self.port}/start"
 
-    def record_start(self, method: str = "webhook", detected_at_monotonic: Optional[float] = None) -> None:
+    def record_start(
+        self,
+        method: str = "webhook",
+        detected_at_monotonic: Optional[float] = None,
+        wall_time: Optional[float] = None,
+    ) -> None:
         """Idempotently records the workload start timestamp."""
         with self._lock:
             if not self.started_event.is_set():
                 now_mono = detected_at_monotonic if detected_at_monotonic is not None else time.monotonic()
                 self.workload_start_monotonic = now_mono
-                self.workload_start_wall = time.time()
+                self.workload_start_wall = wall_time if wall_time is not None else time.time()
                 self.sync_method = method
                 self.started_event.set()
 
     def on_stdout_line(self, line: str) -> None:
         """Parses k6 stdout lines for the machine-readable start token."""
         if "[SBR_WORKLOAD_START]" in line:
-            self.record_start(method="stdout")
+            wall_time = None
+            try:
+                match = re.search(r"\[SBR_WORKLOAD_START\]\s*(\{.*\})", line)
+                if match:
+                    payload = json.loads(match.group(1))
+                    if "timestamp_ms" in payload:
+                        wall_time = float(payload["timestamp_ms"]) / 1000.0
+            except Exception:
+                pass
+            self.record_start(method="stdout", wall_time=wall_time)
 
     def wait_for_start(self, timeout: float = 20.0, fallback_monotonic: Optional[float] = None) -> float:
         """

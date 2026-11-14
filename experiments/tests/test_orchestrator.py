@@ -81,15 +81,17 @@ class MockAdminHTTPHandler(BaseHTTPRequestHandler):
         if auth.startswith("Bearer "):
             MockAdminHTTPHandler.received_token = auth[7:]
 
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8") if length > 0 else ""
+
         if self.fail_put:
             self.send_response(500)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"error":"simulated failure"}\n')
             return
 
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length).decode("utf-8")
-        payload = json.loads(body)
+        payload = json.loads(body) if body else {}
 
         MockAdminHTTPHandler.workload_state["processing_delay"] = payload.get("processing_delay", "20ms")
         MockAdminHTTPHandler.workload_state["processing_jitter"] = payload.get("processing_jitter", "5ms")
@@ -104,8 +106,13 @@ class MockAdminHTTPHandler(BaseHTTPRequestHandler):
         if auth.startswith("Bearer "):
             MockAdminHTTPHandler.received_token = auth[7:]
 
+        length = int(self.headers.get("Content-Length", 0))
+        if length > 0:
+            self.rfile.read(length)
+
         if self.fail_reset:
             self.send_response(500)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"error":"reset failure"}\n')
             return

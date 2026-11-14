@@ -16,6 +16,7 @@ import {
   buildK6Options,
   getTimelinePhase,
   classifyResponse,
+  extractBackendID,
   formatSummaryReport,
 } from './config.js';
 
@@ -239,6 +240,20 @@ describe('k6 Workload Generator Validation Suite', () => {
       assert.equal(resolved.timeline.cooldown_seconds, sc.timeline.cooldown_seconds);
       assert.equal(resolved.workload.stages.length, sc.workload.stages.length);
     });
+  });
+
+  // 13. Backend ID extraction from responses
+  test('13. Safely extracts backend identity only on HTTP 200 with valid payload', () => {
+    assert.equal(
+      extractBackendID(200, '{"backend_id":"backend-a","method":"GET","path":"/api/workload"}'),
+      'backend-a'
+    );
+    assert.equal(extractBackendID(200, { backend_id: 'backend-c' }), 'backend-c');
+    assert.equal(extractBackendID(503, '{"error":"backend overloaded"}'), '');
+    assert.equal(extractBackendID(500, '{"error":"internal error"}'), '');
+    assert.equal(extractBackendID(0, ''), '');
+    assert.equal(extractBackendID(200, 'invalid-json'), '');
+    assert.equal(extractBackendID(200, '{}'), '');
   });
 });
 

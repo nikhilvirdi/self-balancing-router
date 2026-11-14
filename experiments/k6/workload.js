@@ -23,6 +23,7 @@ import {
   constructTargetURL,
   getTimelinePhase,
   classifyResponse,
+  extractBackendID,
   formatSummaryReport,
 } from './config.js';
 
@@ -60,6 +61,9 @@ const overloadRate503 = new Rate('sbr_overload_rate_503');
 const successfulReqDuration = new Trend('sbr_successful_duration', true);
 const measurementDuration = new Trend('sbr_measurement_duration', true);
 const measurementSuccessfulDuration = new Trend('sbr_measurement_successful_duration', true);
+
+// Request-level observation trend for structured data export
+const requestObservation = new Trend('sbr_request_observation', true);
 
 let syncSignalSent = false;
 
@@ -101,6 +105,18 @@ export default function () {
 
   const res = http.get(targetURL, params);
   const classification = classifyResponse(res.status);
+  const backendID = extractBackendID(res.status, res.body);
+
+  // Record individual observation sample with rich diagnostic tags
+  requestObservation.add(res.timings.duration, {
+    status: `${res.status}`,
+    outcome: classification,
+    backend_id: backendID,
+    scenario: selectedScenario.id,
+    phase: phase,
+    policy: __ENV.SBR_PROXY_POLICY || 'unspecified',
+    error: res.error || '',
+  });
 
   switch (classification) {
     case 'success':

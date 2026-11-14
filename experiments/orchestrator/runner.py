@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from .admin import AdminClient, EventExecutionRecord
 from .config import ExperimentConfig, resolve_repo_root
+from .data import DataCollector, DataValidator, IntervalTimeline
 from .docker import DockerLifecycle
 from .k6 import K6ExecutionResult, K6Runner
 from .sync import SyncCoordinator
@@ -158,6 +159,33 @@ class ExperimentRunner:
             with open(trial_scenario_file, "w", encoding="utf-8") as f:
                 json.dump(scenario, f, indent=2)
 
+            events_file = run_dir / "events.json"
+            with open(events_file, "w", encoding="utf-8") as f:
+                json.dump([], f, indent=2)
+
+            with open(run_dir / "k6-summary.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "metadata": {"scenario_id": scenario_id, "routing_policy": policy},
+                    "workload_integrity": {"total_requests": 0, "dropped_iterations": 0},
+                    "outcomes": {"successful_200": 0},
+                }, f, indent=2)
+
+            with open(run_dir / "k6-output.log", "w", encoding="utf-8") as f:
+                f.write("[DRY RUN] No k6 output generated\n")
+
+            timeline = IntervalTimeline(events=[], scenario=scenario)
+            DataCollector.collect_and_export(
+                raw_metrics_path=run_dir / "raw-metrics.json",
+                output_dir=run_dir,
+                workload_start_wall=trial_start_wall,
+                timeline=timeline,
+                scenario=scenario,
+                policy=policy,
+                trial_index=trial_index,
+                dropped_iterations=0,
+                dry_run=True,
+            )
+
             meta_file = run_dir / "metadata.json"
             with open(meta_file, "w", encoding="utf-8") as f:
                 json.dump(metadata, f, indent=2)
@@ -235,6 +263,7 @@ class ExperimentRunner:
             # 5. Build and launch k6 workload
             summary_path = run_dir / "k6-summary.json"
             log_path = run_dir / "k6-output.log"
+            raw_metrics_path = run_dir / "raw-metrics.json"
             trial_scenario_file = run_dir / "scenario.json"
             with open(trial_scenario_file, "w", encoding="utf-8") as f:
                 json.dump(scenario, f, indent=2)
@@ -246,6 +275,7 @@ class ExperimentRunner:
                 summary_output_path=summary_path,
                 sync_url=sync_url,
                 scenario_file=trial_scenario_file,
+                raw_metrics_output_path=raw_metrics_path,
                 http_timeout=f"{int(self.config.http_timeout)}s",
                 preallocated_vus=self.config.vus_preallocated,
                 max_vus=self.config.vus_max,
@@ -405,10 +435,46 @@ class ExperimentRunner:
         with open(events_file, "w", encoding="utf-8") as f:
             json.dump([rec.to_dict() for rec in events_recorded], f, indent=2)
 
-        # Write metadata.json
+        # Process and export structured data (requests.csv and metrics.json)
+        timeline = IntervalTimeline(events=[rec.to_dict() for rec in events_recorded], scenario=scenario)
+        start_wall = sync_coord.workload_start_wall or trial_start_wall
+        dropped_iters = summary_data.get("workload_integrity", {}).get("dropped_iterations", 0) if summary_data else 0
+
+        raw_metrics_path = run_dir / "raw-metrics.json"
+        DataCollector.collect_and_export(
+            raw_metrics_path=raw_metrics_path,
+            output_dir=run_dir,
+            workload_start_wall=start_wall,
+            timeline=timeline,
+            scenario=scenario,
+            policy=policy,
+            trial_index=trial_index,
+            dropped_iterations=dropped_iters,
+        )
+
+        # Write metadata.json (initial before validation)
+        metadata["valid"] = (len(failure_reasons) == 0)
+        metadata["failure_reason"] = "; ".join(failure_reasons) if failure_reasons else None
         meta_file = run_dir / "metadata.json"
         with open(meta_file, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
+
+        # Validate trial artifacts on disk
+        is_data_valid, data_errors = DataValidator.validate_trial(
+            run_dir=run_dir,
+            scenario=scenario,
+            policy=policy,
+            trial_index=trial_index,
+        )
+        if not is_data_valid:
+            for err in data_errors:
+                if err not in failure_reasons:
+                    failure_reasons.append(err)
+
+            metadata["valid"] = False
+            metadata["failure_reason"] = "; ".join(failure_reasons) if failure_reasons else None
+            with open(meta_file, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
 
         status_str = "VALID" if metadata["valid"] else "INVALID"
         logger.info(

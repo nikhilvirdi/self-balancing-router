@@ -243,6 +243,26 @@ export function classifyResponse(status) {
 }
 
 /**
+ * Safely extracts backend identity from an HTTP response if available.
+ *
+ * @param {number} status - HTTP response status code.
+ * @param {string|Object} [body] - Response body string or parsed JSON object.
+ * @returns {string} Backend ID string, or empty string if unobservable.
+ */
+export function extractBackendID(status, body) {
+  if (status !== 200 || !body) {
+    return '';
+  }
+  try {
+    const parsed = (typeof body === 'string') ? JSON.parse(body) : body;
+    if (parsed && typeof parsed.backend_id === 'string') {
+      return parsed.backend_id;
+    }
+  } catch (_) {}
+  return '';
+}
+
+/**
  * Formats a comprehensive machine-readable summary report from k6 execution data.
  *
  * @param {Object} data - Raw k6 summary data from handleSummary.

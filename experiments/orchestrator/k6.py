@@ -66,6 +66,7 @@ class K6Runner:
         summary_output_path: Path,
         sync_url: str,
         scenario_file: Optional[Path] = None,
+        raw_metrics_output_path: Optional[Path] = None,
         http_timeout: str = "10s",
         preallocated_vus: int = 0,
         max_vus: int = 0,
@@ -93,6 +94,8 @@ class K6Runner:
                 cmd.extend(["-e", f"SBR_VUS_PREALLOCATED={preallocated_vus}"])
             if max_vus > 0:
                 cmd.extend(["-e", f"SBR_VUS_MAX={max_vus}"])
+            if raw_metrics_output_path is not None:
+                cmd.extend(["-o", f"json={raw_metrics_output_path.resolve()}"])
             cmd.append(str(workload_rel))
             return cmd, os.environ.copy()
         else:
@@ -128,7 +131,16 @@ class K6Runner:
                 cmd.extend(["-e", f"SBR_VUS_PREALLOCATED={preallocated_vus}"])
             if max_vus > 0:
                 cmd.extend(["-e", f"SBR_VUS_MAX={max_vus}"])
-            cmd.extend([self.docker_image, "run", f"/workspace/{workload_rel.as_posix()}"])
+
+            cmd.extend([self.docker_image, "run"])
+            if raw_metrics_output_path is not None:
+                try:
+                    rel_raw = raw_metrics_output_path.resolve().relative_to(self.repo_root.resolve())
+                    container_raw = f"/workspace/{rel_raw.as_posix()}"
+                except ValueError:
+                    container_raw = f"/workspace/experiments/results/{scenario_id}/{policy}/raw-metrics.json"
+                cmd.extend(["-o", f"json={container_raw}"])
+            cmd.append(f"/workspace/{workload_rel.as_posix()}")
             return cmd, os.environ.copy()
 
     def run_workload(
