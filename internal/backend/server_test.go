@@ -235,42 +235,41 @@ func TestRunLifecycleWithAdmin(t *testing.T) {
 
 	appAddr := waitFor(t, addressChan)
 	adminAddr := waitFor(t, adminAddressChan)
-	client := &http.Client{Timeout: testTimeout}
+	transport := &http.Transport{}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport, Timeout: testTimeout}
+	checkResponse := func(endpoint string, res *http.Response, err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("%s request failed: %v", endpoint, err)
+		}
+		// Reading to EOF returns the connection to the pool before the next request.
+		// Closing an unread body can race asynchronous draining against a new dial.
+		_, readErr := io.Copy(io.Discard, res.Body)
+		if err := errors.Join(readErr, res.Body.Close()); err != nil {
+			t.Fatalf("%s response body: %v", endpoint, err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", endpoint, res.StatusCode)
+		}
+	}
 
 	// 1. Check healthz on application listener
 	hRes, err := client.Get("http://" + appAddr + "/healthz")
-	if err != nil {
-		t.Fatalf("health check failed: %v", err)
-	}
-	_ = hRes.Body.Close()
-	if hRes.StatusCode != http.StatusOK {
-		t.Fatalf("healthz status = %d, want 200", hRes.StatusCode)
-	}
+	checkResponse("healthz", hRes, err)
 
 	// 2. Check admin GET /admin/v1/workload on admin listener
 	req, _ := http.NewRequest("GET", "http://"+adminAddr+"/admin/v1/workload", nil)
 	req.Header.Set("Authorization", "Bearer super-secret-admin-token-12345")
 	admRes, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("admin get failed: %v", err)
-	}
-	_ = admRes.Body.Close()
-	if admRes.StatusCode != http.StatusOK {
-		t.Fatalf("admin status = %d, want 200", admRes.StatusCode)
-	}
+	checkResponse("admin GET", admRes, err)
 
 	// 3. Update delay via admin listener
 	putReq, _ := http.NewRequest("PUT", "http://"+adminAddr+"/admin/v1/workload", strings.NewReader(`{"processing_delay":"10ms","processing_jitter":"5ms"}`))
 	putReq.Header.Set("Authorization", "Bearer super-secret-admin-token-12345")
 	putReq.Header.Set("Content-Type", "application/json")
 	putRes, err := client.Do(putReq)
-	if err != nil {
-		t.Fatalf("admin put failed: %v", err)
-	}
-	_ = putRes.Body.Close()
-	if putRes.StatusCode != http.StatusOK {
-		t.Fatalf("admin put status = %d, want 200", putRes.StatusCode)
-	}
+	checkResponse("admin PUT", putRes, err)
 
 	// 4. Initiate graceful shutdown
 	cancel()
