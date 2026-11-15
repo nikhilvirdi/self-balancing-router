@@ -219,8 +219,8 @@ def main():
             print("[WARN] jsonschema package not installed, skipping JSON Schema validation")
 
         scenarios = catalog.get("scenarios", [])
-        if len(scenarios) != 7:
-            all_errors.append(f"Catalog expected 7 scenarios, found {len(scenarios)}")
+        if len(scenarios) != 8:
+            all_errors.append(f"Catalog expected 8 scenarios, found {len(scenarios)}")
 
         print(f"\n--- Master Catalog Scenarios ({len(scenarios)}) ---")
         for sc in scenarios:
@@ -267,7 +267,7 @@ def main():
             print(f"  - {err}")
         sys.exit(1)
     else:
-        print("[SUCCESS] All 7 benchmark scenarios and catalog passed validation!")
+        print("[SUCCESS] Benchmark scenarios and catalog passed validation!")
         sys.exit(0)
 
 

@@ -19,10 +19,6 @@ func TestCatalogAndScenariosLoadingAndValidation(t *testing.T) {
 		t.Fatalf("failed to load catalog from %s: %v", catalogPath, err)
 	}
 
-	if len(catalog.Scenarios) != 7 {
-		t.Fatalf("expected 7 scenarios in catalog, got %d", len(catalog.Scenarios))
-	}
-
 	expectedIDs := []string{
 		"scenario_1_homogeneous",
 		"scenario_2_heterogeneous",
@@ -31,6 +27,10 @@ func TestCatalogAndScenariosLoadingAndValidation(t *testing.T) {
 		"scenario_5_backend_recovery",
 		"scenario_6_traffic_bursts",
 		"scenario_7_repeated_performance_changes",
+		"scenario_8_degradation_recovery",
+	}
+	if len(catalog.Scenarios) != len(expectedIDs) {
+		t.Fatalf("expected %d scenarios in catalog, got %d", len(expectedIDs), len(catalog.Scenarios))
 	}
 
 	for i, expectedID := range expectedIDs {
@@ -66,8 +66,8 @@ func TestCatalogAndScenariosLoadingAndValidation(t *testing.T) {
 		}
 	}
 
-	if jsonCount != 7 {
-		t.Errorf("expected 7 scenario JSON files in directory, found %d", jsonCount)
+	if jsonCount != len(expectedIDs) {
+		t.Errorf("expected %d scenario JSON files in directory, found %d", len(expectedIDs), jsonCount)
 	}
 }
 

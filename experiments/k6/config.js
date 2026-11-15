@@ -35,7 +35,7 @@ export function resolveScenario(catalog, scenarioKey) {
 
   // 3. Filename matching (e.g. "01_stable_homogeneous.json" -> "scenario_1_homogeneous")
   const stripped = lowerKey.replace(/\.json$/, '');
-  const filePrefixMatch = stripped.match(/^0?([1-7])_(.*)$/);
+  const filePrefixMatch = stripped.match(/^0?([1-8])_(.*)$/);
   if (filePrefixMatch) {
     const num = parseInt(filePrefixMatch[1], 10);
     const suffix = filePrefixMatch[2];

@@ -1,0 +1,94 @@
+{
+  "id": "scenario_8_degradation_recovery",
+  "name": "Constant-Rate Backend Degradation and Recovery",
+  "description": "Five heterogeneous backends receive 80 requests/s for 160 seconds. Backend A slows from 20ms to 300ms at 40 seconds and returns to 20ms at 100 seconds. Jitter and capacities stay constant.",
+  "duration_seconds": 160.0,
+  "timeline": {
+    "warmup_seconds": 0.0,
+    "measurement_seconds": 160.0,
+    "cooldown_seconds": 0.0
+  },
+  "workload": {
+    "pattern": "constant",
+    "stages": [
+      {
+        "start_seconds": 0.0,
+        "duration_seconds": 160.0,
+        "target_rps": 80.0
+      }
+    ]
+  },
+  "backends": {
+    "backend-a": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "20ms",
+      "processing_jitter": "5ms",
+      "seed": 101
+    },
+    "backend-b": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "40ms",
+      "processing_jitter": "10ms",
+      "seed": 102
+    },
+    "backend-c": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "80ms",
+      "processing_jitter": "20ms",
+      "seed": 103
+    },
+    "backend-d": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "120ms",
+      "processing_jitter": "30ms",
+      "seed": 104
+    },
+    "backend-e": {
+      "workers": 4,
+      "queue_capacity": 32,
+      "processing_delay": "180ms",
+      "processing_jitter": "40ms",
+      "seed": 105
+    }
+  },
+  "events": [
+    {
+      "timestamp_seconds": 40.0,
+      "target": "backend-a",
+      "action": "update",
+      "processing_delay": "300ms",
+      "processing_jitter": "5ms"
+    },
+    {
+      "timestamp_seconds": 100.0,
+      "target": "backend-a",
+      "action": "reset"
+    }
+  ],
+  "evaluation": {
+    "primary_hypothesis": "Backend A's temporary capacity reduction changes routing and queueing under fixed offered load; policies may differ in how quickly traffic shifts and returns.",
+    "target_metrics": [
+      "successful_latency_p50_p95_p99",
+      "success_rate",
+      "throughput",
+      "routing_share",
+      "in_flight",
+      "queue_occupancy",
+      "backend_rejections",
+      "adaptation_and_recovery_time"
+    ],
+    "policy_expectations": {
+      "round_robin": "Cyclic routing keeps Backend A's assignment share close to one fifth.",
+      "least_requests": "Outstanding work diverts selections away from a queueing backend.",
+      "p2c": "A busy Backend A is less likely to win a sampled comparison.",
+      "p2c_peak_ewma": "Recent response latency and outstanding work affect Backend A's assignment share.",
+      "ucb1": "Observations from both conditions contribute to the running mean.",
+      "sliding_window_ucb": "Earlier observations expire as new rewards complete.",
+      "discounted_ucb": "Earlier observations progressively lose weight as new rewards complete."
+    }
+  }
+}

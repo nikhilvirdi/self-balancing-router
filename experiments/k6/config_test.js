@@ -27,10 +27,7 @@ const catalogPath = path.resolve(__dirname, '..', 'scenarios.json');
 const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
 
 describe('k6 Workload Generator Validation Suite', () => {
-  // 1. Loading all seven existing scenarios
-  test('1. Loading all seven existing scenarios by ID, filename, and index', () => {
-    assert.equal(catalog.scenarios.length, 7, 'Catalog must contain 7 scenarios');
-
+  test('1. Loading scenarios by ID, filename, and index', () => {
     const expectedIDs = [
       'scenario_1_homogeneous',
       'scenario_2_heterogeneous',
@@ -39,7 +36,9 @@ describe('k6 Workload Generator Validation Suite', () => {
       'scenario_5_backend_recovery',
       'scenario_6_traffic_bursts',
       'scenario_7_repeated_performance_changes',
+      'scenario_8_degradation_recovery',
     ];
+    assert.equal(catalog.scenarios.length, expectedIDs.length);
 
     expectedIDs.forEach((id, idx) => {
       // By exact id
