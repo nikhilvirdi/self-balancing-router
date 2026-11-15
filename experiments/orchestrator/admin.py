@@ -26,6 +26,9 @@ class EventExecutionRecord:
     verified: bool
     error: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
+    triggered_at_epoch_seconds: Optional[float] = None
+    acknowledged_at_epoch_seconds: Optional[float] = None
+    observed_workload: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -156,6 +159,7 @@ class AdminClient:
         planned_ts = float(event.get("timestamp_seconds", 0.0))
 
         now_mono = time.monotonic()
+        triggered_at = time.time()
         actual_rel_ts = now_mono - workload_start_monotonic
         drift = actual_rel_ts - planned_ts
 
@@ -165,13 +169,16 @@ class AdminClient:
         latency = 0.0
         success = False
         verified = False
+        acknowledged_at = None
+        observed = None
 
         try:
             if action == "update":
                 delay = event.get("processing_delay", "")
                 jitter = event.get("processing_jitter", "")
                 params = {"processing_delay": delay, "processing_jitter": jitter}
-                data, latency = self.update_workload(target, delay, jitter)
+                _, latency = self.update_workload(target, delay, jitter)
+                acknowledged_at = time.time()
                 status_code = 200
                 success = True
 
@@ -186,19 +193,25 @@ class AdminClient:
                     )
             elif action == "reset":
                 params = {}
-                data, latency = self.reset_workload(target)
+                _, latency = self.reset_workload(target)
+                acknowledged_at = time.time()
                 status_code = 200
                 success = True
 
                 # Verification check
                 current = self.get_workload(target)
                 baseline_delay = current.get("baseline_processing_delay")
-                if current.get("processing_delay") == baseline_delay:
+                baseline_jitter = current.get("baseline_processing_jitter")
+                if (baseline_delay is not None and baseline_jitter is not None
+                        and current.get("processing_delay") == baseline_delay
+                        and current.get("processing_jitter") == baseline_jitter):
                     verified = True
                 else:
-                    error = f"Reset mismatch: current delay={current.get('processing_delay')} != baseline={baseline_delay}"
+                    error = f"Reset mismatch: expected delay={baseline_delay}, jitter={baseline_jitter}"
             else:
                 error = f"Unknown event action '{action}'"
+            if success:
+                observed = {key: current[key] for key in ("processing_delay", "processing_jitter") if key in current}
         except Exception as e:
             error = self.redact(str(e))
             success = False
@@ -217,5 +230,8 @@ class AdminClient:
             verified=verified,
             error=error,
             parameters=params,
+            triggered_at_epoch_seconds=triggered_at,
+            acknowledged_at_epoch_seconds=acknowledged_at,
+            observed_workload=observed,
         )
 

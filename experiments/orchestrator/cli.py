@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scenario",
         default="scenario_1_homogeneous",
-        help="Scenario ID, index (1-7), or path to scenario JSON",
+        help="Scenario ID, index (1-8), or path to scenario JSON",
     )
     parser.add_argument(
         "--catalog",
@@ -115,6 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Explicit override for k6 preallocated virtual users",
     )
+    parser.add_argument("--k6-compose-network", action="store_true",
+                        help="Send Docker k6 traffic directly to the proxy on the trial ingress network")
     parser.add_argument(
         "--vus-max",
         type=int,
@@ -261,6 +263,7 @@ def main(argv: List[str] = None) -> int:
             proxy_port=args.proxy_port,
             admin_ports=admin_ports,
             k6_exec=args.k6_exec,
+            k6_compose_network=args.k6_compose_network,
             vus_preallocated=args.vus_preallocated,
             vus_max=args.vus_max,
             admin_token=token,

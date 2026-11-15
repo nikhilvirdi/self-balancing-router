@@ -71,6 +71,7 @@ class K6Runner:
         preallocated_vus: int = 0,
         max_vus: int = 0,
         method: Optional[str] = None,
+        docker_network: Optional[str] = None,
     ) -> Tuple[List[str], Dict[str, str]]:
         """Constructs the k6 execution command line and environment."""
         resolved_method = method or self.resolve_execution_method()
@@ -100,8 +101,7 @@ class K6Runner:
             return cmd, os.environ.copy()
         else:
             # Docker execution
-            # Host loopback is reached via host.docker.internal
-            proxy_url = f"http://host.docker.internal:{proxy_port}"
+            proxy_url = "http://proxy:8080" if docker_network else f"http://host.docker.internal:{proxy_port}"
             # Path inside container workspace
             try:
                 rel_summary = summary_output_path.resolve().relative_to(self.repo_root.resolve())
@@ -109,8 +109,10 @@ class K6Runner:
             except ValueError:
                 container_summary = f"/workspace/experiments/results/{scenario_id}/{policy}/k6-summary.json"
 
-            cmd = [
-                "docker", "run", "--rm",
+            cmd = ["docker", "run", "--rm"]
+            if docker_network:
+                cmd.extend(["--network", docker_network])
+            cmd += [
                 "-v", f"{self.repo_root.resolve()}:/workspace",
                 "-w", "/workspace",
                 "-e", f"SBR_SCENARIO={scenario_id}",

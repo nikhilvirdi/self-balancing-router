@@ -41,7 +41,7 @@ from experiments.orchestrator.runner import (
     get_git_commit,
     resolve_run_dir,
 )
-from experiments.orchestrator.sync import SyncCoordinator
+from experiments.orchestrator.sync import SyncCoordinator, parse_workload_start
 
 
 class MockAdminHTTPHandler(BaseHTTPRequestHandler):
@@ -230,6 +230,13 @@ class TestExperimentOrchestrator(unittest.TestCase):
         self.assertIn("SBR_PROXY_URL=http://host.docker.internal:8080", cmd_docker)
         self.assertIn("SBR_SYNC_URL=http://host.docker.internal:9999/start", cmd_docker)
 
+        cmd_network, _ = runner.build_command(
+            scenario_id="scenario_8_degradation_recovery", proxy_port=29280, policy="least-requests",
+            summary_output_path=summary_path, sync_url="", method="docker", docker_network="sbr-test_ingress",
+        )
+        self.assertIn("SBR_PROXY_URL=http://proxy:8080", cmd_network)
+        self.assertEqual(cmd_network[cmd_network.index("--network") + 1], "sbr-test_ingress")
+
     # 4. Experiment directory creation
     def test_directory_creation(self):
         base = Path(self.test_dir)
@@ -255,6 +262,17 @@ class TestExperimentOrchestrator(unittest.TestCase):
         self.assertEqual(sorted_events[0]["timestamp_seconds"], 10.0)
         self.assertEqual(sorted_events[1]["timestamp_seconds"], 40.0)
         self.assertEqual(sorted_events[2]["timestamp_seconds"], 80.0)
+
+    def test_k6_start_token_parses_plain_and_escaped_logs(self):
+        plain = '[SBR_WORKLOAD_START] {"timestamp_ms":1794758155071,"iteration":0}'
+        escaped = r'level=info msg="[SBR_WORKLOAD_START] {\"timestamp_ms\":1794758155071,\"iteration\":0}" source=console'
+        self.assertEqual(parse_workload_start(plain), 1794758155.071)
+        self.assertEqual(parse_workload_start(escaped), 1794758155.071)
+        sync = SyncCoordinator()
+        sync.on_stdout_line('[SBR_WORKLOAD_START] {"timestamp_ms":null}')
+        self.assertFalse(sync.started_event.is_set())
+        sync.on_stdout_line(escaped)
+        self.assertEqual(sync.workload_start_wall, 1794758155.071)
 
     # 6. Administrative request construction
     def test_administrative_requests(self):
@@ -307,10 +325,24 @@ class TestExperimentOrchestrator(unittest.TestCase):
         rec = admin.execute_event(ev, 0, workload_start_monotonic=t0)
 
         self.assertTrue(rec.success)
+        self.assertTrue(rec.verified)
+        self.assertLessEqual(rec.triggered_at_epoch_seconds, rec.acknowledged_at_epoch_seconds)
+        self.assertEqual(rec.observed_workload, {"processing_delay": "20ms", "processing_jitter": "5ms"})
         self.assertAlmostEqual(rec.planned_timestamp_seconds, 10.0, places=2)
         self.assertGreater(rec.actual_trigger_relative_seconds, 10.0)
         self.assertAlmostEqual(rec.scheduling_drift_seconds, 0.05, delta=0.02)
         self.assertGreaterEqual(rec.request_latency_seconds, 0.0)
+
+    def test_reset_checks_baseline_jitter(self):
+        admin = AdminClient(admin_ports={"backend-a": self.mock_port}, admin_token="test-tok")
+        with patch.object(admin, "get_workload", return_value={
+            "processing_delay": "20ms", "baseline_processing_delay": "20ms",
+            "processing_jitter": "10ms", "baseline_processing_jitter": "5ms",
+        }):
+            rec = admin.execute_event({"target": "backend-a", "action": "reset"}, 0, time.monotonic())
+        self.assertTrue(rec.success)
+        self.assertFalse(rec.verified)
+        self.assertEqual(rec.observed_workload["processing_jitter"], "10ms")
 
     # 9. Metadata serialization
     def test_metadata_serialization(self):

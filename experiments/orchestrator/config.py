@@ -324,6 +324,7 @@ class ExperimentConfig:
     docker_build: bool = False
     collect_observability: bool = False
     diagnostic_sample_every: int = 0
+    k6_compose_network: bool = False
 
     def __post_init__(self):
         self.routing_policy = normalize_policy(self.routing_policy)
@@ -343,6 +344,8 @@ class ExperimentConfig:
                 f"Invalid compose_project '{self.compose_project}': cannot use default or primary deployment project name 'self-balancing-router' to protect existing development environments."
             )
         validate_scenario(self.scenario)
+        if self.k6_compose_network and self.k6_exec != "docker":
+            raise ValidationError("--k6-compose-network requires --k6-exec docker")
         if not 0 <= self.diagnostic_sample_every < 2**64:
             raise ValidationError("Diagnostic sampling interval must be an unsigned 64-bit integer")
         if self.diagnostic_sample_every and not self.collect_observability:

@@ -202,6 +202,7 @@ class ExperimentRunner:
                 "workload": {
                     "vus_preallocated": self.config.vus_preallocated,
                     "vus_max": self.config.vus_max,
+                    "k6_compose_network": self.config.k6_compose_network,
                 },
             },
             "reproducibility": {
@@ -409,6 +410,7 @@ class ExperimentRunner:
                 preallocated_vus=self.config.vus_preallocated,
                 max_vus=self.config.vus_max,
                 method=k6_method,
+                docker_network=f"{self.config.compose_project}_ingress" if self.config.k6_compose_network else None,
             )
 
             launch_monotonic = time.monotonic()

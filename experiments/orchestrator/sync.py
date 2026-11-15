@@ -14,6 +14,22 @@ from typing import Optional
 logger = logging.getLogger("sbr.orchestrator.sync")
 
 
+def parse_workload_start(line: str) -> Optional[float]:
+    match = re.search(r"\[SBR_WORKLOAD_START\]\s*(\{[^\r\n]*?\})", line)
+    if not match:
+        return None
+    try:
+        payload = match[1]
+        if payload.startswith(r'{\"'):
+            payload = json.loads(f'"{payload}"')
+        timestamp_ms = json.loads(payload)["timestamp_ms"]
+        if type(timestamp_ms) is int and timestamp_ms > 0:
+            return timestamp_ms / 1000
+    except (KeyError, TypeError, ValueError):
+        return None
+    return None
+
+
 class _SyncHTTPRequestHandler(BaseHTTPRequestHandler):
     coordinator: Optional["SyncCoordinator"] = None
 
@@ -87,7 +103,7 @@ class SyncCoordinator:
                 if method == "stdout" and wall_time is not None:
                     # Pipe latency between k6 iteration 0 and Python stdout consumer
                     lag_ms = max(0.0, (now_wall - wall_time) * 1000.0)
-                    self.sync_uncertainty_ms = round(min(lag_ms, 50.0), 2)
+                    self.sync_uncertainty_ms = round(lag_ms, 2)
                 elif method == "webhook":
                     self.sync_uncertainty_ms = 2.0  # Local loopback HTTP round-trip
                 else:
@@ -97,16 +113,8 @@ class SyncCoordinator:
 
     def on_stdout_line(self, line: str) -> None:
         """Parses k6 stdout lines for the machine-readable start token."""
-        if "[SBR_WORKLOAD_START]" in line:
-            wall_time = None
-            try:
-                match = re.search(r"\[SBR_WORKLOAD_START\]\s*(\{.*\})", line)
-                if match:
-                    payload = json.loads(match.group(1))
-                    if "timestamp_ms" in payload:
-                        wall_time = float(payload["timestamp_ms"]) / 1000.0
-            except Exception:
-                pass
+        wall_time = parse_workload_start(line)
+        if wall_time is not None:
             self.record_start(method="stdout", wall_time=wall_time)
 
     def wait_for_start(self, timeout: float = 20.0, fallback_monotonic: Optional[float] = None) -> float:
