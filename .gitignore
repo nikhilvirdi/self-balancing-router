@@ -25,3 +25,5 @@ coverage.out
 # Python bytecode and cache directories
 __pycache__/
 *.py[cod]
+exploratory-pilot-datasets.zip
+finalReportStructure.md
