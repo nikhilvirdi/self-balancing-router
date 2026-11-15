@@ -1,3 +1,4 @@
+# Go binaries and build artifacts
 *.exe
 *.test
 /proxy
@@ -6,24 +7,56 @@
 /build/
 /dist/
 /tmp/
+
+# Coverage and profiling
 /coverage/
 coverage.out
 *.pprof
 *.prof
-*.log
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Experimental results, archives, and generated data
 /results/
 /experiments/results/
+*.zip
+*.tar.gz
+*.tgz
+
+# Private research and development
+.local-research/
+.local-notes/
+AGENTS.md
+
+# Existing private research files
+exploratory-pilot-datasets.zip
+finalReportStructure.md
+
+# Environment configuration and secrets
 .env
 .env.*
 !.env.example
-/.idea/
-/.vscode/
+
+# Editor-specific files
+.idea/
+.vscode/
 *.swp
-/.local-notes/
-/AGENTS.md
-/.local-notes/
-# Python bytecode and cache directories
-__pycache__/
-*.py[cod]
-exploratory-pilot-datasets.zip
-finalReportStructure.md
+*.swo
+
+# Logs
+*.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
