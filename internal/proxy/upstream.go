@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 func newTransport(dialTimeout, responseHeaderTimeout time.Duration) *http.Transport {
@@ -39,6 +41,10 @@ func newUpstreams(backends []Backend, transport *http.Transport, logger *slog.Lo
 			ErrorLog:  slog.NewLogLogger(backendLogger.Handler(), slog.LevelError),
 			Rewrite: func(req *httputil.ProxyRequest) {
 				req.SetURL(target)
+				req.Out.Header.Del(telemetry.RequestHeader)
+				if id, ok := req.In.Context().Value(diagnosticKey{}).(string); ok {
+					req.Out.Header.Set(telemetry.RequestHeader, id)
+				}
 				for key := range req.Out.Header {
 					if strings.HasPrefix(key, "X-Forwarded-") {
 						delete(req.Out.Header, key)

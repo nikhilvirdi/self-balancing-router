@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net"
+	"strconv"
 )
 
 type LogFormat string
@@ -13,8 +15,10 @@ const (
 )
 
 type Config struct {
-	LogLevel  slog.Level
-	LogFormat LogFormat
+	LogLevel              slog.Level
+	LogFormat             LogFormat
+	MetricsAddr           string
+	DiagnosticSampleEvery uint64
 }
 
 func Load(lookupEnv func(string) (string, bool)) (Config, error) {
@@ -40,6 +44,23 @@ func Load(lookupEnv func(string) (string, bool)) (Config, error) {
 		default:
 			return Config{}, fmt.Errorf("invalid SBR_LOG_FORMAT %q, expected json or text", value)
 		}
+	}
+	if value, ok := lookupEnv("SBR_METRICS_ADDR"); ok && value != "" {
+		_, port, err := net.SplitHostPort(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_METRICS_ADDR: expected TCP host:port")
+		}
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_METRICS_ADDR: expected numeric TCP port")
+		}
+		cfg.MetricsAddr = value
+	}
+	if value, ok := lookupEnv("SBR_DIAGNOSTIC_SAMPLE_EVERY"); ok {
+		n, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid SBR_DIAGNOSTIC_SAMPLE_EVERY: expected a nonnegative integer")
+		}
+		cfg.DiagnosticSampleEvery = n
 	}
 	return cfg, nil
 }

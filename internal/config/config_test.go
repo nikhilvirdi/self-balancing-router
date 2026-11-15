@@ -15,6 +15,19 @@ func TestLoad(t *testing.T) {
 	}{
 		{name: "defaults", want: Config{LogLevel: slog.LevelInfo, LogFormat: LogJSON}},
 		{
+			name: "observability enabled",
+			env:  map[string]string{"SBR_METRICS_ADDR": "127.0.0.1:9464", "SBR_DIAGNOSTIC_SAMPLE_EVERY": "25"},
+			want: Config{LogLevel: slog.LevelInfo, LogFormat: LogJSON, MetricsAddr: "127.0.0.1:9464", DiagnosticSampleEvery: 25},
+		},
+		{
+			name: "observability explicitly disabled",
+			env:  map[string]string{"SBR_METRICS_ADDR": "", "SBR_DIAGNOSTIC_SAMPLE_EVERY": "0"},
+			want: Config{LogLevel: slog.LevelInfo, LogFormat: LogJSON},
+		},
+		{name: "missing metrics port", env: map[string]string{"SBR_METRICS_ADDR": "127.0.0.1"}, wantErr: "SBR_METRICS_ADDR"},
+		{name: "invalid metrics port", env: map[string]string{"SBR_METRICS_ADDR": ":65536"}, wantErr: "SBR_METRICS_ADDR"},
+		{name: "negative sample interval", env: map[string]string{"SBR_DIAGNOSTIC_SAMPLE_EVERY": "-1"}, wantErr: "SBR_DIAGNOSTIC_SAMPLE_EVERY"},
+		{
 			name: "debug text",
 			env:  map[string]string{"SBR_LOG_LEVEL": "debug", "SBR_LOG_FORMAT": "text"},
 			want: Config{LogLevel: slog.LevelDebug, LogFormat: LogText},

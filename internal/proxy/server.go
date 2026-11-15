@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/nikhilvirdi/self-balancing-router/internal/config"
+	"github.com/nikhilvirdi/self-balancing-router/internal/logging"
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error {
@@ -36,9 +40,24 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
+	defer func() { _ = listener.Close() }()
+	var events *telemetry.Events
+	if cfg.DiagnosticSampleEvery != 0 {
+		events = telemetry.NewEvents(logging.New(os.Stdout, config.Config{LogFormat: config.LogJSON}, "proxy"), cfg.DiagnosticSampleEvery, "proxy")
+		defer events.Close()
+	}
+	var metrics *proxyMetrics
+	if cfg.MetricsAddr != "" {
+		metrics = newProxyMetrics(backends)
+		stop, err := telemetry.StartMetrics(ctx, cfg.MetricsAddr, logger, func(w io.Writer) { metrics.render(w, registry, tracker, events) })
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 
 	server := &http.Server{
-		Handler:                      handler(registry, policy, upstreams, tracker, nil, logger),
+		Handler:                      instrumentedHandler(registry, policy, upstreams, tracker, nil, logger, metrics, events),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,
