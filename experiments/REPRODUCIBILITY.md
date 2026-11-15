@@ -26,7 +26,7 @@ python -B scripts/run_experiment.py `
 
 | Flag | Default | Description |
 |---|---|---|
-| `--scenario` | `scenario_1_homogeneous` | Scenario ID, catalog index (1–7), or direct file path to scenario JSON. |
+| `--scenario` | `scenario_1_homogeneous` | Scenario ID, catalog index (1–8), or direct file path to scenario JSON. |
 | `--catalog` | `experiments/scenarios.json` | Path to master scenario catalog. |
 | `--policy` | `round-robin` | Pluggable proxy routing policy (e.g. `first-eligible`, `round-robin`, `least-requests`, `p2c`, `p2c-peak-ewma`, or MAB policies). |
 | `--repetitions` | `1` | Number of independent, sequential experimental trials to execute. |
@@ -36,6 +36,7 @@ python -B scripts/run_experiment.py `
 | `--proxy-port` | `8080` | Host port on which the reverse proxy will listen. |
 | `--admin-ports` | `19091,19092,19093,19094,19095` | Comma-separated admin ports for `backend-a` through `backend-e`. |
 | `--k6-exec` | `auto` | Execution mode for Grafana k6 (`auto`, `local`, or `docker`). |
+| `--k6-compose-network` | `False` | With `--k6-exec docker`, attach k6 to the isolated trial ingress network and target the proxy by Compose service name. |
 | `--vus-preallocated`| `0` | Explicit override for preallocated virtual users (0 uses scenario recommendation). |
 | `--vus-max` | `0` | Explicit override for maximum virtual users (0 uses scenario recommendation). |
 | `--collect-observability` | `False` | Save proxy and backend Prometheus snapshots before and after the workload. |
@@ -49,6 +50,14 @@ To avoid interfering with the local development stack (running on port `8080` wi
 2. The orchestrator automatically defaults backend admin ports to `19091`–`19095`.
 3. The orchestrator enforces pre-flight TCP port collision checks (`verify_no_port_conflicts`) and will refuse to start if any specified port is bound.
 4. Each trial cleans up its own containers using `docker compose -p <project> down -v --remove-orphans`, ensuring no lingering containers or networks remain.
+
+### Constant-rate degradation and recovery
+
+Use scenario `8` or `scenario_8_degradation_recovery` for 160 seconds at a constant open-loop rate of 80 requests/s. Backend A starts at 20 ms, switches to 300 ms at 40 s, and resets at 100 s. Jitter remains 5 ms for A, and the fleet uses the stable heterogeneous profile. This scenario has a separate results directory from the earlier 100-second recovery experiment.
+
+For the matched comparisons, use `--k6-exec docker --k6-compose-network --vus-preallocated 400 --vus-max 400 --collect-observability --diagnostic-sample-every 1`. Run one policy at a time in isolated Compose projects with the same seed within each block, then change the seed and rotate the order for the next block. `events.json` records the wall-clock trigger and acknowledgement of each admin mutation and the workload observed by a separate readback. The actual server-side change falls between the trigger and acknowledgement, subject to clock alignment.
+
+Run `python -B -m experiments.degradation_recovery <trial-directory>` to audit a trial produced with these controls and emit its interval summaries and five-second event-aligned observations as JSON. Routing and in-flight data use direct proxy selection timestamps. Client latency and reliability use k6 dispatch estimates from the request CSV.
 
 ---
 
