@@ -7,7 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/config"
+	"github.com/nikhilvirdi/self-balancing-router/internal/logging"
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
@@ -16,19 +21,30 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen on %q: %w", cfg.ListenAddr, err)
 	}
+	defer func() { _ = listener.Close() }()
 
 	var adminListener net.Listener
 	if cfg.AdminEnabled {
 		var adminErr error
 		adminListener, adminErr = listenConfig.Listen(ctx, "tcp", cfg.AdminListenAddr)
 		if adminErr != nil {
-			_ = listener.Close()
 			return fmt.Errorf("listen admin on %q: %w", cfg.AdminListenAddr, adminErr)
 		}
+		defer func() { _ = adminListener.Close() }()
 	}
 
 	delayModel := NewDelayModel(cfg.ProcessingDelay, cfg.ProcessingJitter, cfg.DelaySeed)
 	pool := NewPool(cfg.Workers, cfg.QueueCapacity, makeProcessor(delayModel))
+	if cfg.DiagnosticSampleEvery != 0 {
+		pool.events = telemetry.NewEvents(logging.New(os.Stdout, config.Config{LogFormat: config.LogJSON}, "backend"), cfg.DiagnosticSampleEvery, cfg.ID)
+		defer pool.events.Close()
+	}
+	stopMetrics, err := telemetry.StartMetrics(ctx, cfg.MetricsAddr, logger, pool.renderMetrics)
+	if err != nil {
+		pool.Close()
+		return err
+	}
+	defer stopMetrics()
 	server := &http.Server{
 		Handler:                      Handler(cfg.ID, pool),
 		ReadHeaderTimeout:            5 * time.Second,

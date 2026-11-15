@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 var (
@@ -30,6 +32,7 @@ type workTask struct {
 	done     chan workResult
 	elem     *list.Element
 	canceled bool
+	trace    *workTrace
 }
 
 type workResult struct {
@@ -52,6 +55,8 @@ type Pool struct {
 	closed        bool
 	processor     processorFunc
 	wg            sync.WaitGroup
+	events        *telemetry.Events
+	full, stopped uint64
 }
 
 func NewPool(workers, queueCapacity int, proc processorFunc) *Pool {
@@ -94,7 +99,16 @@ func (p *Pool) Stats() (active int, queued int) {
 }
 
 func (p *Pool) Submit(ctx context.Context, req requestInfo) (response, error) {
+	return p.submit(ctx, req, "")
+}
+
+func (p *Pool) submit(ctx context.Context, req requestInfo, diagnosticID string) (response, error) {
 	if ctx.Err() != nil {
+		if diagnosticID != "" {
+			p.mu.Lock()
+			p.admission(&workTask{req: req, trace: &workTrace{id: diagnosticID}}, "queue_rejected", "canceled")
+			p.mu.Unlock()
+		}
 		return response{}, ctx.Err()
 	}
 
@@ -103,9 +117,14 @@ func (p *Pool) Submit(ctx context.Context, req requestInfo) (response, error) {
 		req:  req,
 		done: make(chan workResult, 1),
 	}
+	if diagnosticID != "" {
+		task.trace = &workTrace{id: diagnosticID}
+	}
 
 	p.mu.Lock()
 	if !p.accepting {
+		p.stopped++
+		p.admission(task, "queue_rejected", "not_accepting")
 		p.mu.Unlock()
 		return response{}, ErrOverloaded
 	}
@@ -115,6 +134,7 @@ func (p *Pool) Submit(ctx context.Context, req requestInfo) (response, error) {
 		w := p.idleWorkers[len(p.idleWorkers)-1]
 		p.idleWorkers = p.idleWorkers[:len(p.idleWorkers)-1]
 		p.active++
+		p.admission(task, "queue_admitted", "direct")
 		p.mu.Unlock()
 
 		w.taskChan <- task
@@ -124,11 +144,14 @@ func (p *Pool) Submit(ctx context.Context, req requestInfo) (response, error) {
 	// Case 2: All workers are busy. Can we queue?
 	if p.queue.Len() < p.queueCapacity {
 		task.elem = p.queue.PushBack(task)
+		p.admission(task, "queue_admitted", "queued")
 		p.mu.Unlock()
 		return p.waitResult(ctx, task)
 	}
 
 	// Case 3: Processing and waiting capacity are exhausted.
+	p.full++
+	p.admission(task, "queue_rejected", "queue_full")
 	p.mu.Unlock()
 	return response{}, ErrOverloaded
 }
@@ -150,15 +173,19 @@ func (p *Pool) cancelQueued(task *workTask) {
 		p.queue.Remove(task.elem)
 		task.elem = nil
 		task.canceled = true
+		p.queueRemoval(task, "canceled")
 	}
 }
 
 func (p *Pool) executeTask(task *workTask) {
+	task.recordStart()
 	if task.ctx.Err() != nil {
+		task.recordResult(task.ctx.Err())
 		task.done <- workResult{err: task.ctx.Err()}
 		return
 	}
 	resp, err := p.processor(task.ctx, task.req)
+	task.recordResult(err)
 	task.done <- workResult{resp: resp, err: err}
 }
 
@@ -169,15 +196,18 @@ func (p *Pool) runWorker(w *worker) {
 			p.executeTask(task)
 
 			p.mu.Lock()
+			completed := task
 			if p.queue.Len() > 0 && !p.closed {
 				elem := p.queue.Front()
 				p.queue.Remove(elem)
 				task = elem.Value.(*workTask)
 				task.elem = nil
+				p.completed(completed)
 				p.mu.Unlock()
 			} else {
 				task = nil
 				p.active--
+				p.completed(completed)
 				if p.closed {
 					p.mu.Unlock()
 					return
@@ -198,16 +228,17 @@ func (p *Pool) StopAccepting() {
 func (p *Pool) CancelQueue(err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for elem := p.queue.Front(); elem != nil; elem = elem.Next() {
+	for elem := p.queue.Front(); elem != nil; elem = p.queue.Front() {
 		task := elem.Value.(*workTask)
+		p.queue.Remove(elem)
 		task.elem = nil
 		task.canceled = true
+		p.queueRemoval(task, "shutdown")
 		select {
 		case task.done <- workResult{err: err}:
 		default:
 		}
 	}
-	p.queue.Init()
 }
 
 func (p *Pool) Close() {
@@ -219,16 +250,17 @@ func (p *Pool) Close() {
 	}
 	p.accepting = false
 	p.closed = true
-	for elem := p.queue.Front(); elem != nil; elem = elem.Next() {
+	for elem := p.queue.Front(); elem != nil; elem = p.queue.Front() {
 		task := elem.Value.(*workTask)
+		p.queue.Remove(elem)
 		task.elem = nil
 		task.canceled = true
+		p.queueRemoval(task, "shutdown")
 		select {
 		case task.done <- workResult{err: ErrShutdown}:
 		default:
 		}
 	}
-	p.queue.Init()
 	for _, w := range p.idleWorkers {
 		close(w.taskChan)
 	}

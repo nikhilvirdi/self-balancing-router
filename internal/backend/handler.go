@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 type response struct {
@@ -50,11 +52,17 @@ func Handler(backendID string, pool *Pool) http.Handler {
 			return
 		}
 
-		resp, err := pool.Submit(r.Context(), requestInfo{
+		var diagnosticID string
+		if pool.events != nil {
+			if id := r.Header.Get(telemetry.RequestHeader); telemetry.ValidRequestID(id) {
+				diagnosticID = id
+			}
+		}
+		resp, err := pool.submit(r.Context(), requestInfo{
 			BackendID: backendID,
 			Method:    r.Method,
 			Path:      r.URL.Path,
-		})
+		}, diagnosticID)
 		if err != nil {
 			if errors.Is(err, ErrOverloaded) || errors.Is(err, ErrShutdown) {
 				writeOverloaded(w, r)
