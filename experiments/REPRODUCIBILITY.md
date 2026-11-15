@@ -38,6 +38,8 @@ python -B scripts/run_experiment.py `
 | `--k6-exec` | `auto` | Execution mode for Grafana k6 (`auto`, `local`, or `docker`). |
 | `--vus-preallocated`| `0` | Explicit override for preallocated virtual users (0 uses scenario recommendation). |
 | `--vus-max` | `0` | Explicit override for maximum virtual users (0 uses scenario recommendation). |
+| `--collect-observability` | `False` | Save proxy and backend Prometheus snapshots before and after the workload. |
+| `--diagnostic-sample-every` | `0` | With observability collection enabled, trace every Nth proxy request. Zero disables events. |
 | `--dry-run` | `False` | Validates configuration, schemas, and generates artifact skeletons without starting containers. |
 
 ### Development Stack Isolation
@@ -80,12 +82,12 @@ The orchestrator recognizes all eight routing policies implemented in the Go rev
    - `--peak-ewma-decay <duration>`: Aging window for Peak EWMA latency estimates (`SBR_PROXY_PEAK_EWMA_DECAY`, default: `10s`).
    - `--peak-ewma-initial-rtt <duration>`: Cold-start penalty RTT for unobserved backends (`SBR_PROXY_PEAK_EWMA_INITIAL_RTT`, default: `10ms`).
 6. **`ucb1`**: Stationary Multi-Armed Bandit using upper confidence bound exploration based on observed latencies:
-   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization $r_t = 1 - \frac{\text{duration}}{\text{scale}}$ clamped to $[0, 1]$ (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
-7. **`sliding-window-ucb`**: Non-stationary MAB restricting sample statistics to a fixed-size FIFO observation window:
-   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
-   - `--mab-sw-window <int>`: Number of recent observations retained per arm (`SBR_PROXY_MAB_SW_WINDOW`, default: `1000`).
+   - `--mab-latency-scale <duration>` sets the scale for the reciprocal latency reward $r_t = 1 / (1 + \text{duration} / \text{latencyScale})$ (`SBR_PROXY_MAB_LATENCY_SCALE`, default `100ms`).
+7. **`sliding-window-ucb`** maintains a single FIFO window of valid rewards across all arms. Feedback enters in completion order, so delayed requests can enter after requests assigned later. When the window fills, the oldest entry expires from its arm even if that arm receives no new traffic.
+   - `--mab-latency-scale <duration>` sets the reciprocal reward scale (`SBR_PROXY_MAB_LATENCY_SCALE`, default `100ms`).
+   - `--mab-sw-window <int>` sets the number of valid completions retained globally (`SBR_PROXY_MAB_SW_WINDOW`, default `1000`).
 8. **`discounted-ucb`**: Non-stationary MAB using geometric discounting of past observations:
-   - `--mab-latency-scale <duration>`: Scale duration for linear reward normalization (`SBR_PROXY_MAB_LATENCY_SCALE`, default: `100ms`).
+   - `--mab-latency-scale <duration>` sets the reciprocal reward scale (`SBR_PROXY_MAB_LATENCY_SCALE`, default `100ms`).
    - `--mab-discount-factor <float>`: Discount factor $\gamma$ strictly between 0 and 1 (`SBR_PROXY_MAB_DISCOUNT_FACTOR`, default: `0.99`).
 
 ### Policy Equivalence and Fairness
@@ -155,6 +157,49 @@ To maintain scientific validity:
 - Fast rejections (e.g. immediate 503 queue overflows or connection resets) execute in $<2\text{ms}$. Pooling them into the successful latency distribution would artificially depress average latency during periods of severe backend degradation.
 
 ---
+
+### Operational metrics and diagnostic events
+
+`SBR_METRICS_ADDR` configures a dedicated Prometheus plaintext listener on each proxy or backend process. An unset or empty value disables it. For a local process, bind it to `127.0.0.1:9464` and scrape `GET /metrics`. The listener has no authentication and belongs on loopback or a private monitoring network. In Compose trials the runner publishes a separate ephemeral loopback port for each process.
+
+| Metric | Semantics |
+|---|---|
+| `sbr_proxy_requests_total{status}` | Completed application requests by classified HTTP status. Status `0` represents no observed final upstream status for canceled or interrupted requests. If headers arrived before an interruption, the label can reflect the upstream status. Use a counter rate for request throughput. |
+| `sbr_proxy_request_outcomes_total{outcome}` | Completed application requests by outcome. `transport_failure` and `upstream_timeout` classify proxy-generated `502` and `504`. `unavailable` marks proxy-generated `503`, while an upstream `503` carries `upstream_response`. |
+| `sbr_proxy_request_duration_seconds`, `sbr_proxy_successful_request_duration_seconds` | Fixed-bucket histograms for all terminal requests and completed upstream `2xx` responses. Duration spans assignment through forwarding-handler termination, or local routing for a local error. Buckets are cumulative and range from 1 ms to 30 s, with an overflow bucket. |
+| `sbr_proxy_routed_requests_total{backend}` | Assignments per configured backend, including assignments that later fail. |
+| `sbr_proxy_backend_in_flight{backend}` | Currently outstanding assignments per backend. |
+| `sbr_proxy_backend_health{backend,state}` | A value of 1 for the current `unknown`, `healthy` or `unhealthy` state and 0 for the other states. |
+| `sbr_backend_workers_active`, `sbr_backend_workers_capacity` | Occupied worker slots and configured processing capacity. |
+| `sbr_backend_queue_occupancy`, `sbr_backend_queue_capacity` | Waiting tasks and configured waiting capacity. |
+| `sbr_backend_rejections_total{reason}` | Work rejected because the queue was full or the pool had stopped accepting work. |
+| `sbr_diagnostic_dropped_events_total` | Events dropped by the local diagnostic queue or log writer, when events are enabled. |
+
+Metrics exclude health and administrative traffic. Labels are bounded by configured backend IDs, HTTP status codes and fixed outcome categories. Counters reset on process restart. Each histogram snapshot is internally consistent. Values from different metric families or processes may represent slightly different instants.
+
+`SBR_DIAGNOSTIC_SAMPLE_EVERY` enables JSON diagnostic events on stdout. It defaults to `0`. On the proxy, a positive integer selects every Nth application request in routing-attempt order. On a backend, a positive value enables recording for requests sampled by the proxy. The proxy reserves `X-Sbr-Diagnostic-Id`, strips client-supplied values and adds its own ID for sampled upstream requests. Keep direct backend access within the trusted service network. The ID never becomes a metric label. Diagnostic records omit request URLs, bodies and credentials.
+
+Each record has a UTC wall-clock timestamp, a service identity, a schema version (currently `1`), and event fields. Join records by `event.request_id`. The sequence suffix gives proxy selection order within a process. Proxy `backend_selected` events contain the selected backend and an in-flight snapshot taken before reserving that request. `request_completed` events report status, outcome and duration in nanoseconds. Local routing errors have a completion record only. Backend `queue_admitted`, `queue_rejected` and `work_completed` events record queue and worker occupancy, outcome and available waiting or processing times. A proxy failure before backend admission can leave a proxy-only trace. Use per-process order and monotonic durations for short timing comparisons, since cross-process timestamps rely on clock alignment and output may arrive out of order. These events expose queue and routing behavior without exposing per-arm bandit scores.
+
+For an instrumented trial, add `--collect-observability --diagnostic-sample-every 100` to the normal experiment command. Use `--build` to rebuild images after instrumentation changes. Each new trial retains `observability-before-<service>.prom` and `observability-after-<service>.prom`. With sampling enabled it also retains `diagnostic-events.jsonl`. The `observability` section in `metadata.json` records schema version, sampling, collection timestamps, export counts, reported drops and errors. `complete` requires both snapshots from every service and, when sampling, matching event counts and a clean shutdown summary from each service. Existing artifacts and trial validity criteria still apply. Missing diagnostics are tracked independently of workload validity.
+
+Monitoring uses bounded counters and fixed histogram buckets. Each process has a 1,024-event queue when diagnostics are enabled. Request paths enqueue without waiting for output. The queue drops events under pressure, and shutdown allows up to one second to drain it. Sampling every request can increase allocations, output volume and scheduling pressure, so keep sampling settings consistent in comparisons. The orchestrator snapshots show endpoint state before and after a trial. Queue peaks between snapshots are visible only in sampled events or with separate periodic scraping.
+
+#### Observability smoke measurements
+
+`BenchmarkProxyTelemetry` on Windows/amd64 used a synthetic upstream and wrote diagnostic JSON to `io.Discard`. Five repetitions at `-cpu 2` measured:
+
+| Mode | Median time per request | Range | Allocations per request |
+|---|---:|---:|---:|
+| Disabled | 20.24 µs | 7.67–22.61 µs | 21 |
+| Metrics only | 23.13 µs | 20.78–25.51 µs | 21 |
+| Metrics and every-request events | 34.72 µs | 33.88–39.28 µs | 35 |
+
+Absolute timings varied across repeats. The microbenchmark measures proxy handler cost under synthetic load. Storage and log collection costs depend on deployment.
+
+The 90-second Least Requests Docker pair in `scenario_2_heterogeneous` used seed `51021` and issued 6,203 requests per trial. Successful request p99 was 216.31 ms with every-request diagnostics (`least-requests/run-004`) and 215.28 ms with observability disabled (`least-requests/run-005`). The disabled trial had 51 client-side transport errors. This single pair is insufficient for an end-to-end overhead estimate.
+
+The enabled Least Requests trial and the Sliding-Window UCB smoke trial (`sliding-window-ucb/run-004`) each saved all 12 snapshots with zero reported drops. Proxy request and routing counters matched the workload and event records. The traces correlated each successful proxy selection and completion with backend admission and completion. The maximum recorded queue occupancy was 0 for Least Requests and 26 for Sliding-Window UCB in these specific trials.
 
 ## 4. Trial Validity Criteria
 

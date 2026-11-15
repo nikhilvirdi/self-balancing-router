@@ -20,6 +20,7 @@ from .data import DataCollector, DataValidator, IntervalTimeline
 from .docker import DockerLifecycle
 from .history import ExperimentHistory
 from .k6 import K6ExecutionResult, K6Runner
+from .observability import SCHEMA_VERSION, collect_events, collect_metrics, compose_observability, utc_now
 from .sync import SyncCoordinator
 
 logger = logging.getLogger("sbr.orchestrator.runner")
@@ -219,6 +220,13 @@ class ExperimentRunner:
             },
         }
 
+        observability = None
+        services = ["proxy", *self.config.admin_ports]
+        if self.config.collect_observability:
+            observability = {"schema_version": SCHEMA_VERSION, "sample_every": self.config.diagnostic_sample_every,
+                             "snapshots": [], "errors": [], "dropped_events": None, "complete": False}
+            metadata["observability"] = observability
+
         # Dry run short-circuit
         if self.config.dry_run:
             logger.info("Dry run mode: validating without starting infrastructure.")
@@ -235,6 +243,8 @@ class ExperimentRunner:
             override_lines = ["services:", "  proxy:", "    environment:"]
             for k, v in sorted(proxy_policy_env.items()):
                 override_lines.append(f'      {k}: "{v}"')
+            if observability is not None:
+                override_lines.extend(compose_observability(self.config.admin_ports, self.config.diagnostic_sample_every))
             override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
 
             events_file = run_dir / "events.json"
@@ -326,6 +336,8 @@ class ExperimentRunner:
         override_lines = ["services:", "  proxy:", "    environment:"]
         for k, v in sorted(proxy_policy_env.items()):
             override_lines.append(f'      {k}: "{v}"')
+        if observability is not None:
+            override_lines.extend(compose_observability(self.config.admin_ports, self.config.diagnostic_sample_every))
         override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
 
         compose_files = [
@@ -369,6 +381,8 @@ class ExperimentRunner:
             # 3. Apply baseline configuration
             backends_cfg = scenario.get("backends", {})
             admin_client.apply_baseline(backends_cfg)
+            if observability is not None:
+                collect_metrics(docker_lifecycle, run_dir, services, "before", observability)
 
             # 4. Start synchronization server
             sync_coord.start_server()
@@ -518,15 +532,25 @@ class ExperimentRunner:
         finally:
             sync_coord.close()
 
-            # Attempt clean baseline restore before teardown
             try:
-                if backends_cfg:
-                    admin_client.apply_baseline(backends_cfg)
-            except Exception:
-                pass
-
-            # Always tear down Docker containers
-            docker_lifecycle.stop()
+                if observability is not None:
+                    collect_metrics(docker_lifecycle, run_dir, services, "after", observability)
+                try:
+                    if backends_cfg:
+                        admin_client.apply_baseline(backends_cfg)
+                except Exception:
+                    pass
+                if observability is not None:
+                    if self.config.diagnostic_sample_every:
+                        collect_events(docker_lifecycle, run_dir, services, self.config.diagnostic_sample_every, observability)
+                    if len(observability["snapshots"]) != 2 * len(services):
+                        observability["errors"].append("missing one or more metrics snapshots")
+                    observability["complete"] = not observability["errors"]
+                    observability["finished_at"] = utc_now()
+                    if observability["errors"]:
+                        logger.warning("Incomplete observability export: %s", "; ".join(observability["errors"]))
+            finally:
+                docker_lifecycle.stop()
 
         # Finalize metadata
         trial_end_wall = time.time()

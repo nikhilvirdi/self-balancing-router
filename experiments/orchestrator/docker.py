@@ -85,6 +85,10 @@ class DockerLifecycle:
         logger.info("Verifying clean Docker environment for project '%s'...", self.project)
         self.stop(timeout=timeout)
 
+    def capture(self, args, output) -> None:
+        subprocess.run(self._base_cmd() + args, cwd=self.repo_root, env=self.env,
+                       stdout=output, stderr=subprocess.DEVNULL, timeout=40, check=True)
+
     def stop(self, timeout: float = 30.0) -> None:
         """Stops and tears down containers and networks owned by this Compose project."""
         cmd = self._base_cmd() + ["down", "-v", "--remove-orphans"]

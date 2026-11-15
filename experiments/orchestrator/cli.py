@@ -197,6 +197,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Scans experiments/results/ and rebuilds index.json and INDEX.md from disk",
     )
+    parser.add_argument("--collect-observability", action="store_true", help="Save proxy and backend metrics snapshots")
+    parser.add_argument("--diagnostic-sample-every", type=int, default=0, help="Trace every Nth proxy request (0 disables events)")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -275,6 +277,8 @@ def main(argv: List[str] = None) -> int:
             mab_sw_window=args.mab_sw_window,
             mab_discount_factor=args.mab_discount_factor,
             docker_build=args.build,
+            collect_observability=args.collect_observability,
+            diagnostic_sample_every=args.diagnostic_sample_every,
         )
 
         config.validate()
