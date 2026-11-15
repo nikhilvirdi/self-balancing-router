@@ -283,6 +283,42 @@ python -B scripts/run_experiment.py --rebuild-index
 - Pass `--note "..."` to attach observations or anomaly notes to the journal entry.
 - Direct Markdown editing is encouraged for multi-round analysis and post-mortem syntheses.
 
+### Recreate the matched campaign analysis
+
+Run the analysis from the repository root. The offline command uses existing trial data and
+can point to a local archive with `--results-root <path>`. Use Python 3.13 with the pinned
+plotting requirements in a dedicated environment.
+
+#### PowerShell (Windows)
+```powershell
+$analysisEnv = Join-Path $env:TEMP 'sbr-analysis-py313'
+python -m venv $analysisEnv
+& (Join-Path $analysisEnv 'Scripts/python.exe') -m pip install -r experiments/analysis/requirements.txt
+& (Join-Path $analysisEnv 'Scripts/python.exe') -B -m experiments.analysis
+```
+
+#### Bash (Linux / macOS)
+```bash
+python3 -m venv /tmp/sbr-analysis-py313
+/tmp/sbr-analysis-py313/bin/pip install -r experiments/analysis/requirements.txt
+/tmp/sbr-analysis-py313/bin/python -B -m experiments.analysis
+```
+
+Each execution gets a unique directory under `experiments/results/analysis/matched-campaigns/`.
+The analysis index at `experiments/results/analysis/INDEX.md` links to the Markdown reports.
+Each report has a trial and aggregate CSV, JSON comparisons, provenance with file hashes, and
+SVG and PNG versions of all figures. The original experiment index, journal and trial artifacts
+serve as read-only inputs.
+
+The pipeline validates the pilot and recovery manifest selections, reconciles per-trial
+records and archive summaries, and reports matched differences from Round Robin by seed.
+It keeps the scenarios separate and treats each trial as one replicate. Reported
+minima and maxima show the observed variation across the three repetitions. Fields for
+95% median confidence intervals are empty when the sample size cannot support them.
+Whole-trial success includes status-0 timeouts. Timed windows omit zero-duration failures
+whose dispatch times cannot be recovered. The report identifies proxy selection, client
+dispatch estimates, and backend event timing separately.
+
 ---
 
 ## 7. Raw Measurement Archiving and Backup Procedures
