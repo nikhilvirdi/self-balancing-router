@@ -57,7 +57,7 @@ func Run(ctx context.Context, cfg config.ProxyConfig, logger *slog.Logger) error
 	}
 
 	server := &http.Server{
-		Handler:                      instrumentedHandler(registry, policy, upstreams, tracker, nil, logger, metrics, events),
+		Handler:                      instrumentedHandler(registry, policy, upstreams, tracker, nil, logger, metrics, events, cfg.BanditTrace),
 		ReadHeaderTimeout:            5 * time.Second,
 		IdleTimeout:                  60 * time.Second,
 		MaxHeaderBytes:               32 << 10,

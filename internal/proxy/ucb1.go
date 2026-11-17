@@ -1,6 +1,10 @@
 package proxy
 
-import "math"
+import (
+	"math"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
+)
 
 type ucb1State struct {
 	rewardSum    float64
@@ -15,25 +19,45 @@ type ucb1Algorithm struct {
 }
 
 func (a *ucb1Algorithm) Select(arms []banditArm[ucb1State]) (Backend, bool) {
-	return selectUCB(arms, a.tracker, func(state ucb1State) (float64, bool) {
-		return state.selectionScore(a.total)
+	return a.selectDiagnostic(arms, nil)
+}
+
+func (a *ucb1Algorithm) selectDiagnostic(arms []banditArm[ucb1State], trace *telemetry.BanditDecision) (Backend, bool) {
+	return selectUCB(arms, a.tracker, trace, func(state ucb1State) telemetry.BanditArm {
+		score, observed := state.selectionScore(a.total)
+		return armDiagnostic(state.rewardSum, float64(state.observations), score, observed, trace != nil)
 	})
 }
 
-func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, score func(S) (float64, bool)) (Backend, bool) {
+func armDiagnostic(sum, count, score float64, observed, tracing bool) telemetry.BanditArm {
+	result := telemetry.BanditArm{Score: score, Count: count, Observed: observed}
+	if observed && tracing {
+		result.Mean = sum / count
+	}
+	return result
+}
+
+func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, trace *telemetry.BanditDecision, score func(S) telemetry.BanditArm) (Backend, bool) {
 	var best, cold Backend
 	var bestScore float64
 	minPending := math.MaxInt
 	// A zero-pending cold arm gets its first try. When all cold arms have
 	// pending work, use the best observed arm or spread load among cold arms.
 	for _, arm := range arms {
-		value, observed := score(arm.State)
-		if !observed {
+		result := score(arm.State)
+		if trace != nil {
+			result.BackendID = arm.Backend.ID
+			trace.Arms = append(trace.Arms, result)
+		}
+		if !result.Observed {
 			pending, ok := tracker.InFlight(arm.Backend.ID)
 			if !ok {
 				continue
 			}
 			if pending == 0 {
+				if trace != nil {
+					trace.Reason = "cold_no_pending"
+				}
 				return arm.Backend, true
 			}
 			if cold.ID == "" || pending < minPending {
@@ -41,12 +65,18 @@ func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, score func(S
 			}
 			continue
 		}
-		if best.ID == "" || value > bestScore {
-			best, bestScore = arm.Backend, value
+		if best.ID == "" || result.Score > bestScore {
+			best, bestScore = arm.Backend, result.Score
 		}
 	}
 	if best.ID != "" {
+		if trace != nil {
+			trace.Reason = "maximum_ucb"
+		}
 		return best, true
+	}
+	if trace != nil {
+		trace.Reason = "cold_least_pending"
 	}
 	return cold, cold.ID != ""
 }

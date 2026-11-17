@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from experiments.orchestrator.observability import collect_events, collect_metrics, export_events
+from experiments.orchestrator.observability import collect_events, collect_metrics, compose_observability, export_events
 
 
 def record(message, service, **fields):
@@ -15,6 +15,12 @@ def record(message, service, **fields):
 
 
 class ObservabilityExportTest(unittest.TestCase):
+    def test_bandit_trace_compose_option_is_opt_in_and_proxy_only(self):
+        base = compose_observability(["backend-a"], 1)
+        detailed = compose_observability(["backend-a"], 1, bandit_trace=True)
+        self.assertEqual(detailed[1:], base)
+        self.assertEqual(detailed[0], '      SBR_PROXY_BANDIT_TRACE: "true"')
+
     def test_complete_export_preserves_request_ids_and_filters_application_logs(self):
         request_id = "test-request"
         logs = io.BytesIO(

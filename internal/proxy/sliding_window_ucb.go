@@ -1,6 +1,10 @@
 package proxy
 
-import "math"
+import (
+	"math"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
+)
 
 type windowedArmState struct {
 	ucb1State
@@ -33,9 +37,14 @@ type slidingWindowUCB struct {
 }
 
 func (a *slidingWindowUCB) Select(arms []banditArm[windowedArmState]) (Backend, bool) {
-	return selectUCB(arms, a.tracker, func(state windowedArmState) (float64, bool) {
+	return a.selectDiagnostic(arms, nil)
+}
+
+func (a *slidingWindowUCB) selectDiagnostic(arms []banditArm[windowedArmState], trace *telemetry.BanditDecision) (Backend, bool) {
+	return selectUCB(arms, a.tracker, trace, func(state windowedArmState) telemetry.BanditArm {
 		state.rewardSum = min(float64(state.observations), max(0, state.rewardSum+state.correction))
-		return state.selectionScore(uint64(len(a.window)))
+		score, observed := state.selectionScore(uint64(len(a.window)))
+		return armDiagnostic(state.rewardSum, float64(state.observations), score, observed, trace != nil)
 	})
 }
 

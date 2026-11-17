@@ -36,6 +36,7 @@ type ProxyConfig struct {
 	MABLatencyScale       time.Duration
 	MABSWWindow           int
 	MABDiscountFactor     float64
+	BanditTrace           bool
 }
 
 func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
@@ -65,6 +66,13 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		default:
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB)
 		}
+	}
+	if value, ok := lookupEnv("SBR_PROXY_BANDIT_TRACE"); ok {
+		enabled, err := strconv.ParseBool(value)
+		if err != nil || (enabled && cfg.DiagnosticSampleEvery == 0) {
+			return ProxyConfig{}, fmt.Errorf("SBR_PROXY_BANDIT_TRACE requires a boolean and positive diagnostic sampling when enabled")
+		}
+		cfg.BanditTrace = enabled
 	}
 	if value, ok := lookupEnv("SBR_PROXY_P2C_SEED"); ok {
 		seed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)

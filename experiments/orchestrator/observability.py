@@ -16,11 +16,13 @@ def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def compose_observability(backends, every):
+def compose_observability(backends, every, bandit_trace=False):
     lines = []
     for name in ("proxy", *backends):
         if name != "proxy":
             lines.extend([f"  {name}:", "    environment:"])
+        elif bandit_trace:
+            lines.append('      SBR_PROXY_BANDIT_TRACE: "true"')
         lines.extend([
             f'      SBR_METRICS_ADDR: ":{METRICS_PORT}"',
             f'      SBR_DIAGNOSTIC_SAMPLE_EVERY: "{every}"',

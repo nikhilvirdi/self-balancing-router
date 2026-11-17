@@ -201,6 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--collect-observability", action="store_true", help="Save proxy and backend metrics snapshots")
     parser.add_argument("--diagnostic-sample-every", type=int, default=0, help="Trace every Nth proxy request (0 disables events)")
+    parser.add_argument("--bandit-trace", action="store_true", help="Export score and feedback records for sampled MAB requests")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -282,6 +283,7 @@ def main(argv: List[str] = None) -> int:
             docker_build=args.build,
             collect_observability=args.collect_observability,
             diagnostic_sample_every=args.diagnostic_sample_every,
+            bandit_trace=args.bandit_trace,
         )
 
         config.validate()

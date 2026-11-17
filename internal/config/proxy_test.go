@@ -122,6 +122,8 @@ func TestLoadProxyInvalid(t *testing.T) {
 		{"SBR_PROXY_POLICY", "lr"},
 		{"SBR_PROXY_POLICY", "UCB1"},
 		{"SBR_PROXY_MAB_LATENCY_SCALE", ""},
+		{"SBR_PROXY_BANDIT_TRACE", "on"},
+		{"SBR_PROXY_BANDIT_TRACE", "true"},
 		{"SBR_PROXY_MAB_LATENCY_SCALE", "fast"},
 		{"SBR_PROXY_MAB_LATENCY_SCALE", "0s"},
 		{"SBR_PROXY_MAB_LATENCY_SCALE", "-1ms"},

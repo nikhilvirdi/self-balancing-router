@@ -226,6 +226,8 @@ class ExperimentRunner:
         if self.config.collect_observability:
             observability = {"schema_version": SCHEMA_VERSION, "sample_every": self.config.diagnostic_sample_every,
                              "snapshots": [], "errors": [], "dropped_events": None, "complete": False}
+            if self.config.bandit_trace:
+                observability["bandit_trace"] = True
             metadata["observability"] = observability
 
         # Dry run short-circuit
@@ -245,7 +247,9 @@ class ExperimentRunner:
             for k, v in sorted(proxy_policy_env.items()):
                 override_lines.append(f'      {k}: "{v}"')
             if observability is not None:
-                override_lines.extend(compose_observability(self.config.admin_ports, self.config.diagnostic_sample_every))
+                override_lines.extend(compose_observability(
+                    self.config.admin_ports, self.config.diagnostic_sample_every, self.config.bandit_trace,
+                ))
             override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
 
             events_file = run_dir / "events.json"
@@ -338,7 +342,9 @@ class ExperimentRunner:
         for k, v in sorted(proxy_policy_env.items()):
             override_lines.append(f'      {k}: "{v}"')
         if observability is not None:
-            override_lines.extend(compose_observability(self.config.admin_ports, self.config.diagnostic_sample_every))
+            override_lines.extend(compose_observability(
+                self.config.admin_ports, self.config.diagnostic_sample_every, self.config.bandit_trace,
+            ))
         override_file.write_text("\n".join(override_lines) + "\n", encoding="utf-8")
 
         compose_files = [

@@ -324,6 +324,7 @@ class ExperimentConfig:
     docker_build: bool = False
     collect_observability: bool = False
     diagnostic_sample_every: int = 0
+    bandit_trace: bool = False
     k6_compose_network: bool = False
 
     def __post_init__(self):
@@ -350,6 +351,8 @@ class ExperimentConfig:
             raise ValidationError("Diagnostic sampling interval must be an unsigned 64-bit integer")
         if self.diagnostic_sample_every and not self.collect_observability:
             raise ValidationError("Diagnostic sampling requires --collect-observability")
+        if self.bandit_trace and not self.diagnostic_sample_every:
+            raise ValidationError("--bandit-trace requires positive diagnostic sampling")
         if not self.admin_token and not self.dry_run:
             raise ValidationError(
                 "SBR_BACKEND_ADMIN_TOKEN is required. Pass via --admin-token or set the SBR_BACKEND_ADMIN_TOKEN environment variable."

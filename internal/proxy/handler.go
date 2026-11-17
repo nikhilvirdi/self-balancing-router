@@ -16,14 +16,22 @@ import (
 type diagnosticKey struct{}
 
 func handler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger) http.Handler {
-	return instrumentedHandler(registry, policy, upstreams, tracker, observer, logger, nil, nil)
+	return instrumentedHandler(registry, policy, upstreams, tracker, observer, logger, nil, nil, false)
 }
 
-func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger, metrics *proxyMetrics, events *telemetry.Events) http.Handler {
+func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map[string]*httputil.ReverseProxy, tracker *requestTracker, observer Observer, logger *slog.Logger, metrics *proxyMetrics, events *telemetry.Events, banditTrace bool) http.Handler {
 	// Selection sees each reservation and, for observing policies, the release
 	// and resulting policy update together.
 	var assignmentMu sync.Mutex
 	var sequence uint64
+	var traceOrder uint64
+	bandit, _ := policy.(interface {
+		selectDiagnostic([]Backend, *telemetry.BanditDecision) (Backend, bool)
+		applyFeedback(Observation) (float64, bool)
+	})
+	if !banditTrace {
+		bandit = nil
+	}
 	complete := func(o Observation, id string) {
 		status := diagnosticStatus(o)
 		if metrics != nil {
@@ -47,13 +55,27 @@ func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map
 		defaultObserver = observe("")
 	}
 	finish := func(index int, _ Observation) { tracker.finish(index) }
+	var finishObserved func(int, Observation, string)
 	if policy, ok := policy.(observingPolicy); ok {
-		finish = func(index int, o Observation) {
+		finishObserved = func(index int, o Observation, id string) {
 			assignmentMu.Lock()
 			defer assignmentMu.Unlock()
 			tracker.finish(index)
-			deliverObservation(policy.observe, o, logger)
+			if id == "" || bandit == nil {
+				deliverObservation(policy.observe, o, logger)
+				return
+			}
+			feedback := &telemetry.BanditFeedback{}
+			deliverObservation(func(o Observation) {
+				feedback.Reward, feedback.Applied = bandit.applyFeedback(o)
+			}, o, logger)
+			at := time.Now()
+			traceOrder++
+			feedback.Order = traceOrder
+			feedback.AgeNS = at.Sub(o.StartedAt).Nanoseconds()
+			events.Emit(at, telemetry.Event{Kind: "bandit_feedback", RequestID: id, BackendID: o.BackendID, Feedback: feedback})
 		}
+		finish = func(index int, o Observation) { finishObserved(index, o, "") }
 	}
 	const (
 		livePath  = "/livez"
@@ -93,7 +115,15 @@ func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map
 		if id != "" {
 			load = tracker.Snapshot()
 		}
-		backend, selected := policy.Select(candidates)
+		var backend Backend
+		var selected bool
+		var decision *telemetry.BanditDecision
+		if bandit != nil && id != "" {
+			decision = &telemetry.BanditDecision{Arms: make([]telemetry.BanditArm, 0, len(candidates))}
+			backend, selected = bandit.selectDiagnostic(candidates, decision)
+		} else {
+			backend, selected = policy.Select(candidates)
+		}
 		observation.BackendID = backend.ID
 		if !selected || !slices.Contains(candidates, backend) {
 			return nil, 0, observation, id, "invalid routing policy selection"
@@ -111,7 +141,11 @@ func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map
 			metrics.routed[backend.ID].Add(1)
 		}
 		if id != "" {
-			events.Emit(observation.StartedAt, telemetry.Event{Kind: "backend_selected", RequestID: id, BackendID: backend.ID, InFlight: load})
+			if decision != nil {
+				traceOrder++
+				decision.Order = traceOrder
+			}
+			events.Emit(observation.StartedAt, telemetry.Event{Kind: "backend_selected", RequestID: id, BackendID: backend.ID, InFlight: load, Bandit: decision})
 		}
 		return upstream, index, observation, id, ""
 	}
@@ -144,11 +178,15 @@ func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map
 			return
 		}
 		requestObserver := defaultObserver
+		requestFinish := finish
 		if id != "" {
 			r = r.WithContext(context.WithValue(r.Context(), diagnosticKey{}, id))
 			requestObserver = observe(id)
+			if bandit != nil {
+				requestFinish = func(index int, o Observation) { finishObserved(index, o, id) }
+			}
 		}
-		forwardTracked(w, r, upstream, index, observation, finish, requestObserver, logger)
+		forwardTracked(w, r, upstream, index, observation, requestFinish, requestObserver, logger)
 	})
 }
 

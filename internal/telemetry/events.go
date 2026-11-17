@@ -18,16 +18,39 @@ const (
 )
 
 type Event struct {
-	Kind        string `json:"kind"`
-	RequestID   string `json:"request_id"`
-	BackendID   string `json:"backend_id,omitempty"`
-	Status      int    `json:"status"`
-	Outcome     string `json:"outcome,omitempty"`
-	DurationNS  int64  `json:"duration_ns"`
-	QueueWaitNS int64  `json:"queue_wait_ns"`
-	Active      int    `json:"active_workers"`
-	Queued      int    `json:"queued"`
-	InFlight    any    `json:"in_flight,omitempty"`
+	Kind        string          `json:"kind"`
+	RequestID   string          `json:"request_id"`
+	BackendID   string          `json:"backend_id,omitempty"`
+	Status      int             `json:"status"`
+	Outcome     string          `json:"outcome,omitempty"`
+	DurationNS  int64           `json:"duration_ns"`
+	QueueWaitNS int64           `json:"queue_wait_ns"`
+	Active      int             `json:"active_workers"`
+	Queued      int             `json:"queued"`
+	InFlight    any             `json:"in_flight,omitempty"`
+	Bandit      *BanditDecision `json:"bandit,omitempty"`
+	Feedback    *BanditFeedback `json:"feedback,omitempty"`
+}
+
+type BanditArm struct {
+	BackendID string  `json:"backend_id"`
+	Count     float64 `json:"effective_count"`
+	Mean      float64 `json:"mean_reward"`
+	Score     float64 `json:"score"`
+	Observed  bool    `json:"observed"`
+}
+
+type BanditDecision struct {
+	Order  uint64      `json:"order"`
+	Reason string      `json:"reason"`
+	Arms   []BanditArm `json:"arms"`
+}
+
+type BanditFeedback struct {
+	Order   uint64  `json:"order"`
+	Applied bool    `json:"applied"`
+	Reward  float64 `json:"reward"`
+	AgeNS   int64   `json:"age_ns"`
 }
 
 type Events struct {

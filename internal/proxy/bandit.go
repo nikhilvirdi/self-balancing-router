@@ -4,6 +4,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
 
 type banditFeedback struct {
@@ -47,6 +49,10 @@ func newBanditPolicy[S any](backends []Backend, scale time.Duration, algorithm b
 }
 
 func (p *banditPolicy[S]) Select(candidates []Backend) (Backend, bool) {
+	return p.selectDiagnostic(candidates, nil)
+}
+
+func (p *banditPolicy[S]) selectDiagnostic(candidates []Backend, trace *telemetry.BanditDecision) (Backend, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	eligible := make([]banditArm[S], 0, len(candidates))
@@ -58,13 +64,24 @@ func (p *banditPolicy[S]) Select(candidates []Backend) (Backend, bool) {
 	if len(eligible) == 0 {
 		return Backend{}, false
 	}
+	if trace != nil {
+		if algorithm, ok := p.algorithm.(interface {
+			selectDiagnostic([]banditArm[S], *telemetry.BanditDecision) (Backend, bool)
+		}); ok {
+			return algorithm.selectDiagnostic(eligible, trace)
+		}
+	}
 	return p.algorithm.Select(eligible)
 }
 
 func (p *banditPolicy[S]) observe(o Observation) {
+	p.applyFeedback(o)
+}
+
+func (p *banditPolicy[S]) applyFeedback(o Observation) (float64, bool) {
 	reward, ok := banditReward(o, p.scale)
 	if !ok {
-		return
+		return 0, false
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -72,5 +89,7 @@ func (p *banditPolicy[S]) observe(o Observation) {
 		p.algorithm.Update(p.arms, banditFeedback{
 			BackendID: o.BackendID, FinishedAt: o.FinishedAt, Reward: reward,
 		})
+		return reward, true
 	}
+	return 0, false
 }

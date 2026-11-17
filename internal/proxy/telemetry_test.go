@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,8 +14,175 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nikhilvirdi/self-balancing-router/internal/config"
 	"github.com/nikhilvirdi/self-balancing-router/internal/telemetry"
 )
+
+func TestBanditTracePreservesSelectionAndFeedback(t *testing.T) {
+	for _, policy := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB} {
+		t.Run(string(policy), func(t *testing.T) {
+			cfg := config.ProxyConfig{Policy: policy, MABLatencyScale: 100 * time.Millisecond, MABSWWindow: 3, MABDiscountFactor: .99}
+			backends := []Backend{{ID: "a"}, {ID: "b"}}
+			makePolicy := func() (routingPolicy, *requestTracker) {
+				tracker := newRequestTracker(backends)
+				p, err := newRoutingPolicy(cfg, backends, tracker)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return p, tracker
+			}
+			plain, _ := makePolicy()
+			traced, tracker := makePolicy()
+			probe := traced.(interface {
+				selectDiagnostic([]Backend, *telemetry.BanditDecision) (Backend, bool)
+				applyFeedback(Observation) (float64, bool)
+			})
+			plainFeedback := plain.(observingPolicy)
+			now := time.Unix(10, 0)
+			for i := range 12 {
+				want, _ := plain.Select(backends)
+				var decision telemetry.BanditDecision
+				got, ok := probe.selectDiagnostic(backends, &decision)
+				if !ok || got != want {
+					t.Fatalf("step %d selected %+v, want %+v", i, got, want)
+				}
+				reason := "maximum_ucb"
+				if i < len(backends) {
+					reason = "cold_no_pending"
+				}
+				if decision.Reason != reason || len(decision.Arms) == 0 {
+					t.Fatalf("step %d decision = %+v", i, decision)
+				}
+				o := newTestObservation(got.ID, now, 100*time.Millisecond, UpstreamResponse, http.StatusOK)
+				plainFeedback.observe(o)
+				reward, applied := probe.applyFeedback(o)
+				if reward != .5 || !applied {
+					t.Fatalf("feedback = %v, %t", reward, applied)
+				}
+				o.Outcome = Canceled
+				plainFeedback.observe(o)
+				if _, applied := probe.applyFeedback(o); applied {
+					t.Fatal("canceled request became feedback")
+				}
+			}
+			logger := slog.New(slog.DiscardHandler)
+			var log bytes.Buffer
+			events := telemetry.NewEvents(slog.New(slog.NewJSONHandler(&log, nil)), 1, "proxy")
+			upstreams := telemetryUpstreams()
+			upstreams["b"] = upstreams["a"]
+			registry := &Registry{backends: backends}
+			h := instrumentedHandler(registry, traced, upstreams, tracker, nil, logger, nil, events, true)
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+			events.Close()
+			decoder := json.NewDecoder(&log)
+			var selection, feedback, completion struct{ Event telemetry.Event }
+			for _, record := range []any{&selection, &feedback, &completion} {
+				if err := decoder.Decode(record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s, f, c := selection.Event, feedback.Event, completion.Event
+			if s.Bandit == nil || f.Feedback == nil || s.Bandit.Order != 1 || f.Feedback.Order != 2 ||
+				s.RequestID != f.RequestID || s.RequestID != c.RequestID || !f.Feedback.Applied ||
+				f.Feedback.AgeNS < c.DurationNS || f.Feedback.Reward <= 0 {
+				t.Fatalf("uncorrelated decision/feedback: %+v %+v %+v", s, f, c)
+			}
+		})
+	}
+}
+
+func TestBanditTraceOrdersOutOfOrderFeedback(t *testing.T) {
+	backends := []Backend{{ID: "a"}, {ID: "b"}}
+	tracker := newRequestTracker(backends)
+	cfg := config.ProxyConfig{Policy: config.PolicySlidingWindowUCB, MABLatencyScale: time.Second, MABSWWindow: 2}
+	policy, err := newRoutingPolicy(cfg, backends, tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upstreams := telemetryUpstreams()
+	upstream := upstreams["a"]
+	transport := upstream.Transport
+	started := make(chan struct{})
+	release := make(chan struct{})
+	upstream.Transport = telemetryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/first" {
+			close(started)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		return transport.RoundTrip(r)
+	})
+	upstreams["b"] = upstream
+	var log bytes.Buffer
+	events := telemetry.NewEvents(slog.New(slog.NewJSONHandler(&log, nil)), 1, "proxy")
+	defer events.Close()
+	h := instrumentedHandler(&Registry{backends: backends}, policy, upstreams, tracker, nil,
+		slog.New(slog.DiscardHandler), nil, events, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "/first", nil))
+		done <- w.Code
+	}()
+	waitFor(t, started)
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodGet, "/second", nil))
+	close(release)
+	if first := waitFor(t, done); first != http.StatusOK || second.Code != http.StatusOK {
+		t.Fatalf("response statuses = %d, %d", first, second.Code)
+	}
+	events.Close()
+	decoder := json.NewDecoder(&log)
+	for i, backend := range []string{"a", "b", "b", "b", "a", "a"} {
+		var record struct{ Event telemetry.Event }
+		if err := decoder.Decode(&record); err != nil || record.Event.BackendID != backend {
+			t.Fatalf("record %d = %+v, error %v", i, record.Event, err)
+		}
+		if i == 1 && (record.Event.Bandit == nil || record.Event.Bandit.Order != 2) {
+			t.Fatalf("incorrect second decision: %+v", record.Event.Bandit)
+		}
+		if want := map[int]uint64{2: 3, 4: 4}[i]; want != 0 &&
+			(record.Event.Feedback == nil || record.Event.Feedback.Order != want || !record.Event.Feedback.Applied) {
+			t.Fatalf("incorrect feedback at record %d: %+v", i, record.Event.Feedback)
+		}
+	}
+}
+
+func BenchmarkBanditTrace(b *testing.B) {
+	for _, mode := range []struct {
+		name    string
+		enabled bool
+	}{{"standard_events", false}, {"bandit_detail", true}} {
+		b.Run(mode.name, func(b *testing.B) {
+			backends := []Backend{{ID: "a"}, {ID: "b"}, {ID: "c"}, {ID: "d"}, {ID: "e"}}
+			tracker := newRequestTracker(backends)
+			cfg := config.ProxyConfig{Policy: config.PolicySlidingWindowUCB, MABLatencyScale: 100 * time.Millisecond, MABSWWindow: 1000}
+			policy, err := newRoutingPolicy(cfg, backends, tracker)
+			if err != nil {
+				b.Fatal(err)
+			}
+			upstreams := telemetryUpstreams()
+			for _, backend := range backends[1:] {
+				upstreams[backend.ID] = upstreams["a"]
+			}
+			events := telemetry.NewEvents(slog.New(slog.NewJSONHandler(io.Discard, nil)), 1, "proxy")
+			h := instrumentedHandler(&Registry{backends: backends}, policy, upstreams, tracker, nil,
+				slog.New(slog.DiscardHandler), nil, events, mode.enabled)
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			b.ReportAllocs()
+			for b.Loop() {
+				h.ServeHTTP(httptest.NewRecorder(), request)
+			}
+			events.Close()
+			b.ReportMetric(float64(events.Dropped())/float64(b.N), "dropped-events/op")
+		})
+	}
+}
 
 func TestProxyTelemetry(t *testing.T) {
 	ids := make(chan string, 2)
@@ -39,7 +207,7 @@ func TestProxyTelemetry(t *testing.T) {
 	events := telemetry.NewEvents(slog.New(slog.NewJSONHandler(&log, nil)), 1, "proxy")
 	defer events.Close()
 	metrics := newProxyMetrics(backends)
-	h := instrumentedHandler(registry, firstEligiblePolicy{}, upstreams, tracker, nil, logger, metrics, events)
+	h := instrumentedHandler(registry, firstEligiblePolicy{}, upstreams, tracker, nil, logger, metrics, events, false)
 	var propagated []string
 	for i, path := range []string{"/ok?private=secret", "/overload", "/unavailable"} {
 		if i == 2 {
@@ -111,7 +279,7 @@ func TestProxyTelemetryConcurrentScrape(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	events := telemetry.NewEvents(logger, 2, "proxy")
 	defer events.Close()
-	h := instrumentedHandler(registry, firstEligiblePolicy{}, telemetryUpstreams(), tracker, nil, logger, metrics, events)
+	h := instrumentedHandler(registry, firstEligiblePolicy{}, telemetryUpstreams(), tracker, nil, logger, metrics, events, false)
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(func() {
@@ -144,7 +312,7 @@ func BenchmarkProxyTelemetry(b *testing.B) {
 				e = telemetry.NewEvents(slog.New(slog.NewJSONHandler(io.Discard, nil)), 1, "proxy")
 				defer e.Close()
 			}
-			h := instrumentedHandler(registry, firstEligiblePolicy{}, upstreams, tracker, nil, slog.New(slog.DiscardHandler), m, e)
+			h := instrumentedHandler(registry, firstEligiblePolicy{}, upstreams, tracker, nil, slog.New(slog.DiscardHandler), m, e, false)
 			req := httptest.NewRequest(http.MethodGet, "/items", nil)
 			b.ReportAllocs()
 			for b.Loop() {
