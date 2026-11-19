@@ -68,7 +68,8 @@ class BanditDiagnosticTest(unittest.TestCase):
                 })
             with self.subTest(coefficient=coefficient, loads=loads):
                 self.assertEqual(selection_winner(decision, pending, coefficient), (winner, "maximum_ucb"))
-                for field, value in (("penalty", 7), ("adjusted_score", float("nan")), ("count", -1)):
+                for field, value in (("penalty", 7), ("adjusted_score", float("nan")), ("count", -1),
+                                     ("saturated", 1)):
                     corrupted = deepcopy(decision)
                     corrupted["arms"][0]["pending"][field] = value
                     with self.assertRaises(ValueError):
@@ -149,12 +150,18 @@ class BanditDiagnosticTest(unittest.TestCase):
                 r[2][1], r[2][2]["request_completed"][1], r[2][2]["bandit_feedback"][1])],
             lambda r: r[2][2]["bandit_feedback"][1]["feedback"].update(applied=False),
             lambda r: r[2][1]["bandit"]["arms"][0].pop("pending"),
+            lambda r: r[2][1]["bandit"]["arms"][0].update(effective_count=1.0000000001),
+            lambda r: r[2][1]["bandit"]["arms"][0].update(effective_count=True),
         )
         for mutate in mutations:
             corrupted = deepcopy(rows)
             mutate(corrupted)
             with self.assertRaises((ValueError, KeyError)):
                 check_bandit(corrupted, PENDING_POLICY, 100, window_size=1, pending_penalty=2, backend_ids=[backend])
+        instant, ids = pending_history([("a", 0, 200)])
+        instant[0][2]["bandit_feedback"][1]["feedback"]["reward"] = True
+        with self.assertRaises(ValueError):
+            check_bandit(instant, PENDING_POLICY, 100, pending_penalty=.05, backend_ids=ids)
         self.assertIsNone(feedback_reward({"status": 502, "outcome": "transport_failure"}, 100, 200))
         self.assertEqual(feedback_reward({"status": 502, "outcome": "transport_failure"}, 100, 0), 0)
         for status, outcome, upstream, valid in (

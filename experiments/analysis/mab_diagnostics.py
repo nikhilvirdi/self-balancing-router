@@ -42,7 +42,7 @@ def selection_winner(decision, pending, pending_penalty=None, replayed_scores=No
     arms = decision["arms"]
     require(arms and len({arm["backend_id"] for arm in arms}) == len(arms), "Duplicate or missing decision arm")
     for arm in arms:
-        require(all(isfinite(arm[k]) for k in ("effective_count", "mean_reward", "score"))
+        require(all(type(arm[k]) in (int, float) and isfinite(arm[k]) for k in ("effective_count", "mean_reward", "score"))
                 and arm["effective_count"] >= 0 and 0 <= arm["mean_reward"] <= 1 and arm["score"] >= 0,
                 "Invalid arm score components")
     if pending_penalty is not None:
@@ -55,7 +55,8 @@ def selection_winner(decision, pending, pending_penalty=None, replayed_scores=No
             load = arm["pending"]
             require(type(load["count"]) is int and load["count"] == pending[arm["backend_id"]]
                     and load["count"] >= 0 and
-                    all(isfinite(load[k]) for k in ("penalty", "adjusted_score")), "Invalid pending score data")
+                    all(type(load[k]) in (int, float) and isfinite(load[k]) for k in ("penalty", "adjusted_score")),
+                    "Invalid pending score data")
             raw_penalty = pending_penalty * load["count"]
             penalty = min(raw_penalty, float_info.max)
             require(type(load.get("saturated", False)) is bool
@@ -103,7 +104,8 @@ def check_bandit(selections, policy, scale_ms, window_size=1000, pending_penalty
             require(type(feedback["upstream_status"]) is int and
                     (feedback["upstream_status"] == 0 or 100 <= feedback["upstream_status"] <= 599) and
                     type(feedback["applied"]) is bool and
-                    isfinite(feedback["reward"]) and 0 <= feedback["reward"] <= 1 and
+                    type(feedback["reward"]) in (int, float) and isfinite(feedback["reward"]) and
+                    0 <= feedback["reward"] <= 1 and
                     (feedback["applied"] or feedback["reward"] == 0) and
                     type(completed["duration_ns"]) is int and completed["duration_ns"] >= 0 and
                     type(feedback["age_ns"]) is int and type(completed["status"]) is int and
@@ -155,7 +157,8 @@ def check_bandit(selections, policy, scale_ms, window_size=1000, pending_penalty
                     estimate = fsum(reward for b, reward in window if b == candidate) / count
                 score = estimate + sqrt(2 * log(max(1, total)) / count) if observed else 0
                 if policy == PENDING_POLICY:
-                    require(type(arm["observed"]) is bool, "Invalid observed flag")
+                    require(type(arm["observed"]) is bool and arm["effective_count"] == count,
+                            "Invalid observed flag or nonintegral count")
                 require(arm["observed"] == observed and isclose(arm["effective_count"], count, rel_tol=1e-9)
                         and isclose(arm["mean_reward"], estimate, abs_tol=1e-11)
                         and isclose(arm["score"], score, abs_tol=1e-11, rel_tol=1e-9),
