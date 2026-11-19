@@ -6,22 +6,26 @@ from collections import Counter, defaultdict, deque
 import csv
 from itertools import groupby
 import json
-from math import isclose, isfinite, log, sqrt
+import re
+from math import fsum, isclose, isfinite, log, sqrt
 from pathlib import Path
 from statistics import mean
+from sys import float_info
 
 from ..degradation_recovery import (
     BACKENDS, event_traces, raw_counts, read_json, read_metrics, shares, sustained_crossing, verify_traces, workload_start,
 )
 from ..orchestrator.data import compute_latency_stats
+from ..validate_scenarios import parse_go_duration
 from .data import POLICY_DEFAULTS, require
 
-MAB = ("ucb1", "sliding-window-ucb", "discounted-ucb")
+PENDING_POLICY = "sliding-window-ucb-pending"
+MAB = ("ucb1", "sliding-window-ucb", "discounted-ucb", PENDING_POLICY)
 BURST_LENGTH = 8
 
 
-def feedback_reward(completion, scale_ms):
-    status = completion["status"]
+def feedback_reward(completion, scale_ms, upstream_status=None):
+    status = completion["status"] if upstream_status is None else upstream_status
     outcome = completion["outcome"]
     if outcome == "upstream_response":
         if 200 <= status < 300:
@@ -29,11 +33,11 @@ def feedback_reward(completion, scale_ms):
         if 500 <= status < 600:
             return 0.0
     elif outcome in ("upstream_timeout", "transport_failure"):
-        return 0.0
+        return 0.0 if upstream_status in (None, 0) else None
     return None
 
 
-def selection_winner(decision, pending):
+def selection_winner(decision, pending, pending_penalty=None, replayed_scores=None):
     """Check the recorded candidates using the same precedence as the selector."""
     arms = decision["arms"]
     require(arms and len({arm["backend_id"] for arm in arms}) == len(arms), "Duplicate or missing decision arm")
@@ -41,19 +45,53 @@ def selection_winner(decision, pending):
         require(all(isfinite(arm[k]) for k in ("effective_count", "mean_reward", "score"))
                 and arm["effective_count"] >= 0 and 0 <= arm["mean_reward"] <= 1 and arm["score"] >= 0,
                 "Invalid arm score components")
+    if pending_penalty is not None:
+        require(isfinite(pending_penalty) and pending_penalty >= 0, "Invalid configured pending penalty")
+        eligible = decision["eligible"]
+        require(eligible and len(set(eligible)) == len(eligible) and
+                eligible == [b for b in pending if b in eligible], "Invalid eligible backend order")
+        require([arm["backend_id"] for arm in arms] == eligible[:len(arms)], "Missing or unordered decision arm")
+        for arm in arms:
+            load = arm["pending"]
+            require(type(load["count"]) is int and load["count"] == pending[arm["backend_id"]]
+                    and load["count"] >= 0 and
+                    all(isfinite(load[k]) for k in ("penalty", "adjusted_score")), "Invalid pending score data")
+            raw_penalty = pending_penalty * load["count"]
+            penalty = min(raw_penalty, float_info.max)
+            require(type(load.get("saturated", False)) is bool
+                    and load.get("saturated", False) == (raw_penalty > float_info.max)
+                    and isclose(load["penalty"], penalty, rel_tol=1e-12, abs_tol=1e-12)
+                    and isclose(load["adjusted_score"], arm["score"]-penalty, rel_tol=1e-12, abs_tol=1e-12),
+                    "Recorded pending penalty or adjusted score differs from replay")
     cold = [arm for arm in arms if not arm["observed"]]
     observed = [arm for arm in arms if arm["observed"]]
     first_available = next((arm for arm in cold if pending[arm["backend_id"]] == 0), None)
     if first_available:
         require(first_available is arms[-1], "Cold decision failed to short-circuit at the selected arm")
         return first_available["backend_id"], "cold_no_pending"
+    if pending_penalty is not None:
+        require(len(arms) == len(eligible), "Incomplete observed decision")
     if observed:
-        return max(observed, key=lambda arm: arm["score"])["backend_id"], "maximum_ucb"
+        if pending_penalty is None:
+            return max(observed, key=lambda arm: arm["score"])["backend_id"], "maximum_ucb"
+        best = observed[0]
+        scores = replayed_scores if replayed_scores is not None else {a["backend_id"]: a["score"] for a in observed}
+        for arm in observed[1:]:
+            delta = pending_penalty * (pending[arm["backend_id"]]-pending[best["backend_id"]])
+            if scores[arm["backend_id"]]-scores[best["backend_id"]] > delta:
+                best = arm
+        return best["backend_id"], "maximum_ucb"
     return min(cold, key=lambda arm: pending[arm["backend_id"]])["backend_id"], "cold_least_pending"
 
 
-def check_bandit(selections, policy, scale_ms):
+def check_bandit(selections, policy, scale_ms, window_size=1000, pending_penalty=None, backend_ids=BACKENDS):
+    require(policy in MAB and isfinite(scale_ms) and scale_ms > 0 and
+            type(window_size) is int and window_size > 0, "Invalid replay configuration")
+    if policy == PENDING_POLICY:
+        require(pending_penalty is not None and isfinite(pending_penalty) and pending_penalty >= 0,
+                "Missing or invalid configured pending penalty")
     transitions = []
+    request_ids = set()
     for _, selected, trace in selections:
         decision = selected["bandit"]
         applied = trace["bandit_feedback"][1]
@@ -61,36 +99,71 @@ def check_bandit(selections, policy, scale_ms):
         completed = trace["request_completed"][1]
         require(applied["backend_id"] == selected["backend_id"] and decision["order"] < feedback["order"]
                 and feedback["age_ns"] >= completed["duration_ns"], "Invalid selection-feedback correlation")
-        expected = feedback_reward(completed, scale_ms)
+        if policy == PENDING_POLICY:
+            require(type(feedback["upstream_status"]) is int and
+                    (feedback["upstream_status"] == 0 or 100 <= feedback["upstream_status"] <= 599) and
+                    type(feedback["applied"]) is bool and
+                    isfinite(feedback["reward"]) and 0 <= feedback["reward"] <= 1 and
+                    (feedback["applied"] or feedback["reward"] == 0) and
+                    type(completed["duration_ns"]) is int and completed["duration_ns"] >= 0 and
+                    type(feedback["age_ns"]) is int and type(completed["status"]) is int and
+                    type(decision["order"]) is int and type(feedback["order"]) is int and
+                    selected["request_id"] == applied["request_id"] == completed["request_id"] and
+                    isinstance(selected["request_id"], str) and selected["request_id"] and
+                    selected["request_id"] not in request_ids and
+                    completed["backend_id"] == selected["backend_id"],
+                    "Invalid feedback identity, status or value")
+            request_ids.add(selected["request_id"])
+            outcome = completed["outcome"]
+            status = feedback["upstream_status"]
+            require(outcome in ("upstream_response", "transport_failure", "upstream_timeout", "canceled", "interrupted")
+                    and (outcome != "upstream_response" or status >= 100)
+                    and completed["status"] == {"transport_failure": 502, "upstream_timeout": 504}.get(outcome, status),
+                    "Completion status or outcome contradicts original upstream status")
+        expected = feedback_reward(completed, scale_ms, feedback.get("upstream_status"))
         require(feedback["applied"] == (expected is not None) and (
             not feedback["applied"] or isclose(feedback["reward"], expected, rel_tol=1e-12)
         ), "Feedback eligibility or reward differs from source rule")
-        transitions.extend([(decision["order"], selected, True), (feedback["order"], applied, False)])
+        reward = expected if policy == PENDING_POLICY else feedback["reward"]
+        transitions.extend([(decision["order"], selected, True, None), (feedback["order"], applied, False, reward)])
     pending = Counter()
     counts = Counter()
     rewards = Counter()
     window = deque()
     total = 0
     sequence = 0
-    for order, event, is_selection in sorted(transitions, key=lambda row: row[0]):
+    for order, event, is_selection, reward in sorted(transitions, key=lambda row: row[0]):
         sequence += 1
         require(order == sequence, "Missing or duplicated selection-feedback order")
         backend = event["backend_id"]
         if is_selection:
             loads = {load["BackendID"]: load["Count"] for load in event["in_flight"]}
-            require(all(loads[b] == pending[b] for b in BACKENDS), "Pending reservations disagree with trace order")
+            require(all(loads[b] == pending[b] for b in backend_ids), "Pending reservations disagree with trace order")
+            if policy == PENDING_POLICY:
+                require(list(loads) == list(backend_ids) and len(loads) == len(event["in_flight"])
+                        and all(type(n) is int and n >= 0 for n in loads.values()),
+                        "Invalid in-flight snapshot")
             decision = event["bandit"]
+            reconstructed = {} if policy == PENDING_POLICY else None
             for arm in decision["arms"]:
                 candidate = arm["backend_id"]
                 count = counts[candidate]
                 observed = count > (1e-12 if policy == "discounted-ucb" else 0)
                 estimate = rewards[candidate] / count if observed else 0
+                if policy == PENDING_POLICY and observed:
+                    # Recompute from retained rewards to avoid subtraction cancellation on eviction.
+                    estimate = fsum(reward for b, reward in window if b == candidate) / count
                 score = estimate + sqrt(2 * log(max(1, total)) / count) if observed else 0
+                if policy == PENDING_POLICY:
+                    require(type(arm["observed"]) is bool, "Invalid observed flag")
                 require(arm["observed"] == observed and isclose(arm["effective_count"], count, rel_tol=1e-9)
                         and isclose(arm["mean_reward"], estimate, abs_tol=1e-11)
                         and isclose(arm["score"], score, abs_tol=1e-11, rel_tol=1e-9),
                         "Recorded score components differ from feedback replay")
-            require(selection_winner(decision, loads) == (backend, decision["reason"]),
+                if policy == PENDING_POLICY:
+                    reconstructed[candidate] = score
+            coefficient = pending_penalty if policy == PENDING_POLICY else None
+            require(selection_winner(decision, loads, coefficient, reconstructed) == (backend, decision["reason"]),
                     "Scores or pending state disagree with the selected backend")
             pending[backend] += 1
         else:
@@ -104,17 +177,35 @@ def check_bandit(selections, policy, scale_ms):
                 for arm in BACKENDS:
                     counts[arm] *= .99
                     rewards[arm] *= .99
-            elif policy == "sliding-window-ucb":
-                if len(window) == 1000:
+            elif policy in ("sliding-window-ucb", PENDING_POLICY):
+                if len(window) == window_size:
                     expired_arm, expired_reward = window.popleft()
                     counts[expired_arm] -= 1
                     rewards[expired_arm] = rewards[expired_arm] - expired_reward if counts[expired_arm] else 0
                     total -= 1
-                window.append((backend, feedback["reward"]))
+                window.append((backend, reward))
             counts[backend] += 1
-            rewards[backend] += feedback["reward"]
+            rewards[backend] += reward
             total += 1
     require(not any(pending.values()), "Pending requests remain after trace end")
+
+
+def replay_settings(meta):
+    if meta["routing_policy"] != PENDING_POLICY:
+        return 100, 1000, None
+    settings = meta["configuration"]["policy_configuration"]
+    penalty = settings["SBR_PROXY_MAB_PENDING_PENALTY"]
+    window = settings.get("SBR_PROXY_MAB_SW_WINDOW", 1000)
+    require(type(penalty) in (str, int, float) and type(window) in (str, int)
+            and re.fullmatch(r"\+?\d+", str(window).strip()), "Invalid pending policy configuration types")
+    penalty, window = float(penalty), int(window)
+    scale = settings.get("SBR_PROXY_MAB_LATENCY_SCALE", "100ms")
+    parts = re.findall(r"\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h)", scale)
+    require("".join(parts) == scale and parts, "Invalid reward latency scale")
+    scale_ms = sum(parse_go_duration(part) for part in parts) * 1000
+    require(isfinite(penalty) and penalty >= 0 and window > 0 and isfinite(scale_ms) and scale_ms > 0,
+            "Invalid pending policy configuration")
+    return scale_ms, window, penalty
 
 
 def audit(path):
@@ -139,6 +230,10 @@ def audit(path):
     config = meta["configuration"]
     settings = config["workload"]
     policy_settings = dict(config["policy_configuration"])
+    if meta["routing_policy"] == PENDING_POLICY:
+        replay_settings(meta)
+        for key in ("SBR_PROXY_MAB_PENDING_PENALTY", "SBR_PROXY_MAB_SW_WINDOW", "SBR_PROXY_MAB_LATENCY_SCALE"):
+            policy_settings.pop(key, None)
     require(policy_settings.pop("SBR_PROXY_POLICY") == meta["routing_policy"] and
             (POLICY_DEFAULTS | policy_settings) == POLICY_DEFAULTS and config["http_timeout"] == 5,
             "Unsupported policy parameters or client timeout")
@@ -173,7 +268,8 @@ def audit(path):
     selections.sort(key=lambda x: int(x[1]["request_id"].rsplit("-", 1)[1]))
     traced = obs.get("bandit_trace", False) and meta["routing_policy"] in MAB
     if traced:
-        check_bandit(selections, meta["routing_policy"], 100)
+        scale, window, penalty = replay_settings(meta)
+        check_bandit(selections, meta["routing_policy"], scale, window, penalty)
     else:
         require(all("bandit" not in s and "bandit_feedback" not in t for _, s, t in selections), "Unexpected bandit trace")
     return meta, stats, counts, changes, start, selections, clocks, vus
@@ -201,10 +297,10 @@ def queue_by_burst(selections):
     return result
 
 
-def prior_feedback_mass(policy, feedback, order, boundary, backend="backend-a"):
+def prior_feedback_mass(policy, feedback, order, boundary, backend="backend-a", window_size=1000):
     history = [(selection, arm) for applied, selection, arm in feedback if applied < order]
-    if policy == "sliding-window-ucb":
-        history = history[-1000:]
+    if policy in ("sliding-window-ucb", PENDING_POLICY):
+        history = history[-window_size:]
     weights = [(selection, .99 ** (len(history) - i - 1) if policy == "discounted-ucb" else 1)
                for i, (selection, arm) in enumerate(history) if arm == backend]
     total = sum(weight for _, weight in weights)
@@ -281,7 +377,7 @@ def summarize(path):
                     winner = by_id[selected["backend_id"]]["mean_reward"]
                     lower_mean += winner + 1e-12 < max(arm["mean_reward"] for arm in by_id.values())
             result.update({"decision_reasons": dict(Counter(s["reason"] for s in scores)),
-                           "bonus_overrides_mean_pct": 100 * lower_mean / len(rows),
+                           ("adjusted_score_overrides_mean_pct" if policy == PENDING_POLICY else "bonus_overrides_mean_pct"): 100 * lower_mean / len(rows),
                            "feedback_age_p95_ms": percentile([r["age_ns"] / 1e6 for r in eligible]),
                            "feedback_after_forward_p95_ms": percentile([
                                (t["bandit_feedback"][1]["feedback"]["age_ns"] - t["request_completed"][1]["duration_ns"]) / 1e6
@@ -337,7 +433,8 @@ def summarize(path):
                 if after is not None:
                     decision = after["bandit"]
                     arm = next((a for a in decision["arms"] if a["backend_id"] == "backend-a"), None)
-                    total, older = prior_feedback_mass(policy, feedback, decision["order"], boundary)
+                    total, older = prior_feedback_mass(policy, feedback, decision["order"], boundary,
+                                                      window_size=replay_settings(meta)[1])
                     if arm is not None:
                         require(isclose(total, arm["effective_count"], rel_tol=1e-9, abs_tol=1e-10),
                                 "Reconstructed Backend A feedback mass differs from direct effective count")

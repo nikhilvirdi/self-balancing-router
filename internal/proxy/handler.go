@@ -65,7 +65,7 @@ func instrumentedHandler(registry *Registry, policy routingPolicy, upstreams map
 				deliverObservation(policy.observe, o, logger)
 				return
 			}
-			feedback := &telemetry.BanditFeedback{}
+			feedback := &telemetry.BanditFeedback{UpstreamStatus: o.UpstreamStatus}
 			deliverObservation(func(o Observation) {
 				feedback.Reward, feedback.Applied = bandit.applyFeedback(o)
 			}, o, logger)

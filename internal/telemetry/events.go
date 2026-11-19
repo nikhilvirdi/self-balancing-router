@@ -33,24 +33,34 @@ type Event struct {
 }
 
 type BanditArm struct {
-	BackendID string  `json:"backend_id"`
-	Count     float64 `json:"effective_count"`
-	Mean      float64 `json:"mean_reward"`
-	Score     float64 `json:"score"`
-	Observed  bool    `json:"observed"`
+	BackendID string         `json:"backend_id"`
+	Count     float64        `json:"effective_count"`
+	Mean      float64        `json:"mean_reward"`
+	Score     float64        `json:"score"`
+	Observed  bool           `json:"observed"`
+	Pending   *BanditPending `json:"pending,omitempty"`
+}
+
+type BanditPending struct {
+	Count         int     `json:"count"`
+	Penalty       float64 `json:"penalty"`
+	AdjustedScore float64 `json:"adjusted_score"`
+	Saturated     bool    `json:"saturated,omitempty"`
 }
 
 type BanditDecision struct {
-	Order  uint64      `json:"order"`
-	Reason string      `json:"reason"`
-	Arms   []BanditArm `json:"arms"`
+	Order    uint64      `json:"order"`
+	Reason   string      `json:"reason"`
+	Arms     []BanditArm `json:"arms"`
+	Eligible []string    `json:"eligible,omitempty"`
 }
 
 type BanditFeedback struct {
-	Order   uint64  `json:"order"`
-	Applied bool    `json:"applied"`
-	Reward  float64 `json:"reward"`
-	AgeNS   int64   `json:"age_ns"`
+	Order          uint64  `json:"order"`
+	Applied        bool    `json:"applied"`
+	Reward         float64 `json:"reward"`
+	AgeNS          int64   `json:"age_ns"`
+	UpstreamStatus int     `json:"upstream_status"`
 }
 
 type Events struct {

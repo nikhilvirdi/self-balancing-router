@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +20,9 @@ import (
 )
 
 func TestBanditTracePreservesSelectionAndFeedback(t *testing.T) {
-	for _, policy := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB} {
+	for _, policy := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB, config.PolicySlidingWindowUCBPending} {
 		t.Run(string(policy), func(t *testing.T) {
-			cfg := config.ProxyConfig{Policy: policy, MABLatencyScale: 100 * time.Millisecond, MABSWWindow: 3, MABDiscountFactor: .99}
+			cfg := config.ProxyConfig{Policy: policy, MABLatencyScale: 100 * time.Millisecond, MABSWWindow: 3, MABDiscountFactor: .99, MABPendingPenalty: .05}
 			backends := []Backend{{ID: "a"}, {ID: "b"}}
 			makePolicy := func() (routingPolicy, *requestTracker) {
 				tracker := newRequestTracker(backends)
@@ -151,6 +152,110 @@ func TestBanditTraceOrdersOutOfOrderFeedback(t *testing.T) {
 			t.Fatalf("incorrect feedback at record %d: %+v", i, record.Event.Feedback)
 		}
 	}
+}
+
+func TestPendingWindowDiagnosticReplay(t *testing.T) {
+	backends := []Backend{{ID: "a"}}
+	tracker := newRequestTracker(backends)
+	policy, err := newRoutingPolicy(config.ProxyConfig{
+		Policy: config.PolicySlidingWindowUCBPending, MABLatencyScale: time.Second, MABSWWindow: 2, MABPendingPenalty: 4,
+	}, backends, tracker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 2)
+	release := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	upstreams := telemetryUpstreams()
+	upstream := upstreams["a"]
+	upstream.Transport = telemetryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		var gate <-chan struct{}
+		switch r.URL.Path {
+		case "/first":
+			gate = release[0]
+		case "/second":
+			gate = release[1]
+		}
+		if gate != nil {
+			entered <- struct{}{}
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return nil, r.Context().Err()
+			}
+		}
+		status := http.StatusOK
+		switch r.URL.Path {
+		case "/redirect":
+			status = http.StatusFound
+		case "/client-error":
+			status = http.StatusBadRequest
+		case "/overload":
+			status = http.StatusServiceUnavailable
+		}
+		return &http.Response{StatusCode: status, Body: http.NoBody, Request: r}, nil
+	})
+	originalResponse := upstream.ModifyResponse
+	upstream.ModifyResponse = func(r *http.Response) error {
+		if err := originalResponse(r); err != nil {
+			return err
+		}
+		if r.Request.URL.Path == "/interrupted" {
+			panic(http.ErrAbortHandler)
+		}
+		return nil
+	}
+	var output bytes.Buffer
+	events := telemetry.NewEvents(slog.New(slog.NewJSONHandler(&output, nil)), 1, "proxy")
+	defer events.Close()
+	h := instrumentedHandler(&Registry{backends: backends}, policy, upstreams, tracker, nil,
+		slog.New(slog.DiscardHandler), nil, events, true)
+	serve := func(path string) {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+	serve("/initial")
+	done := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	for i, path := range []string{"/first", "/second"} {
+		go func() {
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil))
+			close(done[i])
+		}()
+		waitFor(t, entered)
+	}
+	assertInFlight(t, tracker, "a", 2)
+	close(release[1])
+	waitFor(t, done[1])
+	close(release[0])
+	waitFor(t, done[0])
+	candidate := policy.(*banditPolicy[windowedArmState])
+	window := candidate.algorithm.(*pendingSlidingWindowUCB)
+	for _, path := range []string{"/redirect", "/client-error", "/overload"} {
+		before := slices.Clone(window.window)
+		serve(path)
+		assertInFlight(t, tracker, "a", 0)
+		if path != "/overload" && !slices.Equal(before, window.window) {
+			t.Fatal("excluded response changed the window")
+		}
+	}
+	before := slices.Clone(window.window)
+	func() {
+		defer func() {
+			if got := recover(); got != http.ErrAbortHandler {
+				t.Fatalf("interruption = %v", got)
+			}
+		}()
+		serve("/interrupted")
+	}()
+	assertInFlight(t, tracker, "a", 0)
+	if !slices.Equal(before, window.window) {
+		t.Fatal("interrupted response became a reward")
+	}
+	events.Close()
+	if events.Dropped() != 0 {
+		t.Fatal("diagnostic export dropped events")
+	}
+	t.Log(output.String())
 }
 
 func BenchmarkBanditTrace(b *testing.B) {
