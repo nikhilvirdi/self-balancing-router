@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -29,6 +30,7 @@ func TestLoadProxy(t *testing.T) {
 				MABLatencyScale:       100 * time.Millisecond,
 				MABSWWindow:           1000,
 				MABDiscountFactor:     0.99,
+				MABPendingPenalty:     0.05,
 				HealthCheck: HealthCheckConfig{
 					Enabled: true, Interval: 5 * time.Second, Timeout: 2 * time.Second,
 					FailureThreshold: 2, RecoveryThreshold: 2,
@@ -49,6 +51,7 @@ func TestLoadProxy(t *testing.T) {
 				"SBR_PROXY_MAB_LATENCY_SCALE":         "250ms",
 				"SBR_PROXY_MAB_SW_WINDOW":             " 64 ",
 				"SBR_PROXY_MAB_DISCOUNT_FACTOR":       " 0.95 ",
+				"SBR_PROXY_MAB_PENDING_PENALTY":       " 0.125 ",
 				"SBR_LOG_LEVEL":                       "debug",
 				"SBR_LOG_FORMAT":                      "text",
 				"SBR_PROXY_HEALTH_CHECK_ENABLED":      "false",
@@ -70,6 +73,7 @@ func TestLoadProxy(t *testing.T) {
 				MABLatencyScale:       250 * time.Millisecond,
 				MABSWWindow:           64,
 				MABDiscountFactor:     0.95,
+				MABPendingPenalty:     0.125,
 				HealthCheck: HealthCheckConfig{
 					Enabled: false, Interval: 150 * time.Millisecond, Timeout: 40 * time.Millisecond,
 					FailureThreshold: 3, RecoveryThreshold: 4,
@@ -134,6 +138,13 @@ func TestLoadProxyInvalid(t *testing.T) {
 		{"SBR_PROXY_MAB_SW_WINDOW", "3.5"},
 		{"SBR_PROXY_MAB_SW_WINDOW", "999999999999999999999"},
 		{"SBR_PROXY_MAB_DISCOUNT_FACTOR", ""},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", ""},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "-0.05"},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "NaN"},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "+Inf"},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "-Inf"},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "fast"},
+		{"SBR_PROXY_MAB_PENDING_PENALTY", "1e999"},
 		{"SBR_PROXY_MAB_DISCOUNT_FACTOR", "fast"},
 		{"SBR_PROXY_MAB_DISCOUNT_FACTOR", "0"},
 		{"SBR_PROXY_MAB_DISCOUNT_FACTOR", "-0.1"},
@@ -181,6 +192,26 @@ func TestLoadProxyInvalid(t *testing.T) {
 			})
 			if err == nil || !strings.Contains(err.Error(), tt.key) {
 				t.Fatalf("LoadProxy() error = %v, want error naming %s", err, tt.key)
+			}
+		})
+	}
+}
+
+func TestLoadPendingPenalty(t *testing.T) {
+	for _, value := range []string{"0", "-0", "0.05", "2", "1.7976931348623157e308"} {
+		t.Run(value, func(t *testing.T) {
+			cfg, err := LoadProxy(func(key string) (string, bool) {
+				if key == "SBR_PROXY_POLICY" {
+					return string(PolicySlidingWindowUCBPending), true
+				}
+				return value, key == "SBR_PROXY_MAB_PENDING_PENALTY"
+			})
+			if err != nil || cfg.Policy != PolicySlidingWindowUCBPending || cfg.MABPendingPenalty < 0 ||
+				math.IsInf(cfg.MABPendingPenalty, 0) || math.IsNaN(cfg.MABPendingPenalty) {
+				t.Fatalf("configuration = %+v, error %v", cfg, err)
+			}
+			if (value == "0" || value == "-0") && cfg.MABPendingPenalty != 0 {
+				t.Fatal("zero penalty was replaced by the default")
 			}
 		})
 	}

@@ -124,13 +124,13 @@ func TestBanditHTTPFeedback(t *testing.T) {
 }
 
 func TestMABHTTPFeedback(t *testing.T) {
-	for _, name := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB} {
+	for _, name := range []config.ProxyPolicy{config.PolicyUCB1, config.PolicySlidingWindowUCB, config.PolicyDiscountedUCB, config.PolicySlidingWindowUCBPending} {
 		t.Run(string(name), func(t *testing.T) {
 			testBanditHTTPFeedback(t, func(registry *Registry, tracker *requestTracker) (routingPolicy, func([]Observation)) {
 				const window, gamma = 3, 0.5
 				backends := registry.Snapshot()
 				policy, err := newRoutingPolicy(config.ProxyConfig{
-					Policy: name, MABLatencyScale: time.Second, MABSWWindow: window, MABDiscountFactor: gamma,
+					Policy: name, MABLatencyScale: time.Second, MABSWWindow: window, MABDiscountFactor: gamma, MABPendingPenalty: .05,
 				}, backends, tracker)
 				if err != nil {
 					t.Fatal(err)
@@ -142,7 +142,7 @@ func TestMABHTTPFeedback(t *testing.T) {
 						for i, sample := range samples {
 							weight := 1.0
 							switch name {
-							case config.PolicySlidingWindowUCB:
+							case config.PolicySlidingWindowUCB, config.PolicySlidingWindowUCBPending:
 								if i < len(samples)-window {
 									continue
 								}
@@ -164,7 +164,14 @@ func TestMABHTTPFeedback(t *testing.T) {
 							}
 						case *banditPolicy[windowedArmState]:
 							assertWindowArm(t, p, id, uint64(count), sum)
-							if got := len(p.algorithm.(*slidingWindowUCB).window); got != int(total) {
+							var algorithm *slidingWindowUCB
+							switch a := p.algorithm.(type) {
+							case *slidingWindowUCB:
+								algorithm = a
+							case *pendingSlidingWindowUCB:
+								algorithm = a.slidingWindowUCB
+							}
+							if got := len(algorithm.window); got != int(total) {
 								t.Fatalf("window length = %d, want %g", got, total)
 							}
 						case *banditPolicy[discountedArmState]:

@@ -11,6 +11,11 @@ type ucb1State struct {
 	observations uint64
 }
 
+type ucbArmScore struct {
+	telemetry.BanditArm
+	pending int
+}
+
 // The bandit policy lock protects both the arm states and this total, which
 // includes rewards from arms that are temporarily ineligible.
 type ucb1Algorithm struct {
@@ -23,31 +28,32 @@ func (a *ucb1Algorithm) Select(arms []banditArm[ucb1State]) (Backend, bool) {
 }
 
 func (a *ucb1Algorithm) selectDiagnostic(arms []banditArm[ucb1State], trace *telemetry.BanditDecision) (Backend, bool) {
-	return selectUCB(arms, a.tracker, trace, func(state ucb1State) telemetry.BanditArm {
+	return selectUCB(arms, a.tracker, trace, func(arm banditArm[ucb1State]) ucbArmScore {
+		state := arm.State
 		score, observed := state.selectionScore(a.total)
 		return armDiagnostic(state.rewardSum, float64(state.observations), score, observed, trace != nil)
-	})
+	}, nil)
 }
 
-func armDiagnostic(sum, count, score float64, observed, tracing bool) telemetry.BanditArm {
-	result := telemetry.BanditArm{Score: score, Count: count, Observed: observed}
+func armDiagnostic(sum, count, score float64, observed, tracing bool) ucbArmScore {
+	result := ucbArmScore{BanditArm: telemetry.BanditArm{Score: score, Count: count, Observed: observed}}
 	if observed && tracing {
 		result.Mean = sum / count
 	}
 	return result
 }
 
-func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, trace *telemetry.BanditDecision, score func(S) telemetry.BanditArm) (Backend, bool) {
+func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, trace *telemetry.BanditDecision, score func(banditArm[S]) ucbArmScore, better func(ucbArmScore, ucbArmScore) bool) (Backend, bool) {
 	var best, cold Backend
-	var bestScore float64
+	var bestScore ucbArmScore
 	minPending := math.MaxInt
 	// A zero-pending cold arm gets its first try. When all cold arms have
 	// pending work, use the best observed arm or spread load among cold arms.
 	for _, arm := range arms {
-		result := score(arm.State)
+		result := score(arm)
 		if trace != nil {
 			result.BackendID = arm.Backend.ID
-			trace.Arms = append(trace.Arms, result)
+			trace.Arms = append(trace.Arms, result.BanditArm)
 		}
 		if !result.Observed {
 			pending, ok := tracker.InFlight(arm.Backend.ID)
@@ -65,8 +71,12 @@ func selectUCB[S any](arms []banditArm[S], tracker *requestTracker, trace *telem
 			}
 			continue
 		}
-		if best.ID == "" || result.Score > bestScore {
-			best, bestScore = arm.Backend, result.Score
+		improves := result.Score > bestScore.Score
+		if best.ID != "" && better != nil {
+			improves = better(result, bestScore)
+		}
+		if best.ID == "" || improves {
+			best, bestScore = arm.Backend, result
 		}
 	}
 	if best.ID != "" {

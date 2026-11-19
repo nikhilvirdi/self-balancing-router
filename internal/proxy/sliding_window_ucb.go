@@ -41,11 +41,15 @@ func (a *slidingWindowUCB) Select(arms []banditArm[windowedArmState]) (Backend, 
 }
 
 func (a *slidingWindowUCB) selectDiagnostic(arms []banditArm[windowedArmState], trace *telemetry.BanditDecision) (Backend, bool) {
-	return selectUCB(arms, a.tracker, trace, func(state windowedArmState) telemetry.BanditArm {
-		state.rewardSum = min(float64(state.observations), max(0, state.rewardSum+state.correction))
-		score, observed := state.selectionScore(uint64(len(a.window)))
-		return armDiagnostic(state.rewardSum, float64(state.observations), score, observed, trace != nil)
-	})
+	return selectUCB(arms, a.tracker, trace, func(arm banditArm[windowedArmState]) ucbArmScore {
+		return a.score(arm.State, trace != nil)
+	}, nil)
+}
+
+func (a *slidingWindowUCB) score(state windowedArmState, tracing bool) ucbArmScore {
+	state.rewardSum = min(float64(state.observations), max(0, state.rewardSum+state.correction))
+	score, observed := state.selectionScore(uint64(len(a.window)))
+	return armDiagnostic(state.rewardSum, float64(state.observations), score, observed, tracing)
 }
 
 func (a *slidingWindowUCB) Update(arms map[string]windowedArmState, feedback banditFeedback) {

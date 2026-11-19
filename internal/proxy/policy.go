@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"math"
 	"math/rand/v2"
 	"sync"
 	"sync/atomic"
@@ -39,11 +40,19 @@ func newRoutingPolicy(cfg config.ProxyConfig, backends []Backend, tracker *reque
 		return newPeakEWMAPolicy(cfg, tracker, time.Now()), nil
 	case config.PolicyUCB1:
 		return newBanditPolicy(backends, cfg.MABLatencyScale, &ucb1Algorithm{tracker: tracker})
-	case config.PolicySlidingWindowUCB:
+	case config.PolicySlidingWindowUCB, config.PolicySlidingWindowUCBPending:
 		if cfg.MABSWWindow <= 0 {
 			return nil, fmt.Errorf("sliding-window UCB window must be positive")
 		}
-		return newBanditPolicy(backends, cfg.MABLatencyScale, &slidingWindowUCB{tracker: tracker, size: cfg.MABSWWindow})
+		window := &slidingWindowUCB{tracker: tracker, size: cfg.MABSWWindow}
+		if cfg.Policy == config.PolicySlidingWindowUCBPending {
+			penalty := cfg.MABPendingPenalty
+			if penalty < 0 || math.IsNaN(penalty) || math.IsInf(penalty, 0) {
+				return nil, fmt.Errorf("pending penalty must be finite and nonnegative")
+			}
+			return newBanditPolicy(backends, cfg.MABLatencyScale, &pendingSlidingWindowUCB{slidingWindowUCB: window, penalty: penalty})
+		}
+		return newBanditPolicy(backends, cfg.MABLatencyScale, window)
 	case config.PolicyDiscountedUCB:
 		gamma := cfg.MABDiscountFactor
 		if !(gamma > 0 && gamma < 1) {

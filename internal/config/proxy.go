@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -11,14 +12,15 @@ import (
 type ProxyPolicy string
 
 const (
-	PolicyFirstEligible    ProxyPolicy = "first-eligible"
-	PolicyRoundRobin       ProxyPolicy = "round-robin"
-	PolicyLeastRequests    ProxyPolicy = "least-requests"
-	PolicyP2C              ProxyPolicy = "p2c"
-	PolicyP2CPeakEWMA      ProxyPolicy = "p2c-peak-ewma"
-	PolicyUCB1             ProxyPolicy = "ucb1"
-	PolicySlidingWindowUCB ProxyPolicy = "sliding-window-ucb"
-	PolicyDiscountedUCB    ProxyPolicy = "discounted-ucb"
+	PolicyFirstEligible           ProxyPolicy = "first-eligible"
+	PolicyRoundRobin              ProxyPolicy = "round-robin"
+	PolicyLeastRequests           ProxyPolicy = "least-requests"
+	PolicyP2C                     ProxyPolicy = "p2c"
+	PolicyP2CPeakEWMA             ProxyPolicy = "p2c-peak-ewma"
+	PolicyUCB1                    ProxyPolicy = "ucb1"
+	PolicySlidingWindowUCB        ProxyPolicy = "sliding-window-ucb"
+	PolicyDiscountedUCB           ProxyPolicy = "discounted-ucb"
+	PolicySlidingWindowUCBPending ProxyPolicy = "sliding-window-ucb-pending"
 )
 
 type ProxyConfig struct {
@@ -36,6 +38,7 @@ type ProxyConfig struct {
 	MABLatencyScale       time.Duration
 	MABSWWindow           int
 	MABDiscountFactor     float64
+	MABPendingPenalty     float64
 	BanditTrace           bool
 }
 
@@ -57,14 +60,15 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 		MABLatencyScale:       100 * time.Millisecond,
 		MABSWWindow:           1000,
 		MABDiscountFactor:     0.99,
+		MABPendingPenalty:     0.05,
 	}
 	if value, ok := lookupEnv("SBR_PROXY_POLICY"); ok {
 		policy := ProxyPolicy(strings.TrimSpace(value))
 		switch policy {
-		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB:
+		case PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB, PolicySlidingWindowUCBPending:
 			cfg.Policy = policy
 		default:
-			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB)
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_POLICY %q: expected %q, %q, %q, %q, %q, %q, %q, %q, or %q", value, PolicyFirstEligible, PolicyRoundRobin, PolicyLeastRequests, PolicyP2C, PolicyP2CPeakEWMA, PolicyUCB1, PolicySlidingWindowUCB, PolicyDiscountedUCB, PolicySlidingWindowUCBPending)
 		}
 	}
 	if value, ok := lookupEnv("SBR_PROXY_BANDIT_TRACE"); ok {
@@ -117,6 +121,13 @@ func LoadProxy(lookupEnv func(string) (string, bool)) (ProxyConfig, error) {
 			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_DISCOUNT_FACTOR %q: expected a finite number strictly between 0 and 1", value)
 		}
 		cfg.MABDiscountFactor = factor
+	}
+	if value, ok := lookupEnv("SBR_PROXY_MAB_PENDING_PENALTY"); ok {
+		penalty, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || penalty < 0 || math.IsNaN(penalty) || math.IsInf(penalty, 0) {
+			return ProxyConfig{}, fmt.Errorf("invalid SBR_PROXY_MAB_PENDING_PENALTY %q: expected a finite nonnegative number", value)
+		}
+		cfg.MABPendingPenalty = penalty
 	}
 	if value, ok := lookupEnv("SBR_PROXY_LISTEN_ADDR"); ok {
 		host, port, err := net.SplitHostPort(value)

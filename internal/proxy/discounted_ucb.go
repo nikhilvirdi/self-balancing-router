@@ -48,11 +48,11 @@ func (a *discountedUCB) Select(arms []banditArm[discountedArmState]) (Backend, b
 }
 
 func (a *discountedUCB) selectDiagnostic(arms []banditArm[discountedArmState], trace *telemetry.BanditDecision) (Backend, bool) {
-	return selectUCB(arms, a.tracker, trace, func(state discountedArmState) telemetry.BanditArm {
-		state = state.at(a.step, a.gamma)
+	return selectUCB(arms, a.tracker, trace, func(arm banditArm[discountedArmState]) ucbArmScore {
+		state := arm.State.at(a.step, a.gamma)
 		score, observed := state.selectionScore(a.total)
 		return armDiagnostic(state.rewardSum, state.observations, score, observed, trace != nil)
-	})
+	}, nil)
 }
 
 func (a *discountedUCB) Update(arms map[string]discountedArmState, feedback banditFeedback) {
