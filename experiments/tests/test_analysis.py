@@ -19,6 +19,7 @@ def write_jsonl(path, records):
 
 class AnalysisDataTest(unittest.TestCase):
     def test_selection_uses_completed_manifests_and_skips_failed_attempts_and_controls(self):
+        self.assertNotIn("sliding-window-ucb-pending", POLICIES)
         with TemporaryDirectory() as temp:
             root = Path(temp)
             schedule = [(block, scenario, policy) for block in (1, 2, 3) for scenario in (STABLE, SUDDEN) for policy in POLICIES]

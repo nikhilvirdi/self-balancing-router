@@ -4,6 +4,7 @@ Configuration, scenario resolution, and validation for experiment orchestration.
 
 from dataclasses import dataclass, field
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -35,6 +36,7 @@ SUPPORTED_POLICIES: Set[str] = {
     "p2c-peak-ewma",
     "ucb1",
     "sliding-window-ucb",
+    "sliding-window-ucb-pending",
     "discounted-ucb",
 }
 
@@ -53,6 +55,7 @@ POLICY_NORMALIZATION: Dict[str, str] = {
     "ucb_1": "ucb1",
     "sliding_window_ucb": "sliding-window-ucb",
     "sliding-window-ucb": "sliding-window-ucb",
+    "sliding-window-ucb-pending": "sliding-window-ucb-pending",
     "sw_ucb": "sliding-window-ucb",
     "sw-ucb": "sliding-window-ucb",
     "discounted_ucb": "discounted-ucb",
@@ -321,6 +324,7 @@ class ExperimentConfig:
     mab_latency_scale: Optional[str] = None
     mab_sw_window: Optional[int] = None
     mab_discount_factor: Optional[float] = None
+    mab_pending_penalty: float = 0.05
     docker_build: bool = False
     collect_observability: bool = False
     diagnostic_sample_every: int = 0
@@ -383,10 +387,19 @@ class ExperimentConfig:
         if self.mab_discount_factor is not None:
             if not isinstance(self.mab_discount_factor, (int, float)) or not (0.0 < float(self.mab_discount_factor) < 1.0):
                 raise ValidationError(f"Invalid mab_discount_factor {self.mab_discount_factor}: expected a float strictly between 0 and 1")
+        if isinstance(self.mab_pending_penalty, bool) or not isinstance(self.mab_pending_penalty, (int, float)):
+            raise ValidationError("mab_pending_penalty must be a finite nonnegative number")
+        try:
+            valid_penalty = math.isfinite(self.mab_pending_penalty) and self.mab_pending_penalty >= 0
+        except OverflowError:
+            valid_penalty = False
+        if not valid_penalty:
+            raise ValidationError("mab_pending_penalty must be a finite nonnegative number")
 
     def get_proxy_policy_env(self) -> Dict[str, str]:
         """Returns the policy-specific environment variables for the proxy."""
-        env: Dict[str, str] = {"SBR_PROXY_POLICY": self.routing_policy}
+        env: Dict[str, str] = {"SBR_PROXY_POLICY": self.routing_policy,
+                               "SBR_PROXY_MAB_PENDING_PENALTY": str(self.mab_pending_penalty)}
         if self.p2c_seed is not None:
             env["SBR_PROXY_P2C_SEED"] = str(self.p2c_seed)
         if self.peak_ewma_decay is not None:

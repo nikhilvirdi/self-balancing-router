@@ -32,6 +32,7 @@ POLICY_DEFAULTS = {
     "SBR_PROXY_MAB_LATENCY_SCALE": "100ms",
     "SBR_PROXY_MAB_SW_WINDOW": "1000",
     "SBR_PROXY_MAB_DISCOUNT_FACTOR": "0.99",
+    "SBR_PROXY_MAB_PENDING_PENALTY": "0.05",
 }
 FAILURES = ("transport", "backend_503", "proxy_503", "unknown_503", "other_http")
 
@@ -117,7 +118,7 @@ def discover(root):
     controls = {row["path"] for row in protocol["controls"]}
     require(not any(row["path"] in controls for row in recovery_rows), "Recovery control in comparison cohort")
     require(not any(row["path"] == plan["original_invalid"] for row in pilot_rows), "Pilot control in comparison cohort")
-    require(set(POLICIES) == SUPPORTED_POLICIES, "Policy catalog changed")
+    require(set(POLICIES) <= SUPPORTED_POLICIES, "Archived policy is no longer supported")
     specs = [
         TrialSpec(row["scenario"], row["policy"], row["rep"], plan["base_seed"] + row["rep"] - 1,
                   row["path"], plan["git_commit"], row["requests"])

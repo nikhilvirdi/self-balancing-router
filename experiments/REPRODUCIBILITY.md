@@ -41,6 +41,8 @@ python -B scripts/run_experiment.py `
 | `--vus-max` | `0` | Explicit override for maximum virtual users (0 uses scenario recommendation). |
 | `--collect-observability` | `False` | Save proxy and backend Prometheus snapshots before and after the workload. |
 | `--diagnostic-sample-every` | `0` | With observability collection enabled, trace every Nth proxy request. Zero disables events. |
+| `--mab-pending-penalty` | `0.05` | Finite nonnegative outstanding-request coefficient, recorded in policy configuration metadata. |
+| `--bandit-trace` | `False` | Export visited arm scores and applied feedback for sampled requests. Requires positive diagnostic sampling. |
 | `--dry-run` | `False` | Validates configuration, schemas, and generates artifact skeletons without starting containers. |
 
 ### Development Stack Isolation
@@ -79,7 +81,7 @@ Experiments evaluate both stationary and non-stationary conditions using uniform
 
 ### Supported Routing Policies and Parameter Settings
 
-The orchestrator recognizes all eight routing policies implemented in the Go reverse proxy:
+The orchestrator recognizes nine routing policies implemented in the Go reverse proxy:
 
 1. **`first-eligible`**: Static benchmark selecting the first available healthy backend.
 2. **`round-robin`**: Deterministic circular rotation across healthy backends.
@@ -98,6 +100,15 @@ The orchestrator recognizes all eight routing policies implemented in the Go rev
 8. **`discounted-ucb`**: Non-stationary MAB using geometric discounting of past observations:
    - `--mab-latency-scale <duration>` sets the reciprocal reward scale (`SBR_PROXY_MAB_LATENCY_SCALE`, default `100ms`).
    - `--mab-discount-factor <float>`: Discount factor $\gamma$ strictly between 0 and 1 (`SBR_PROXY_MAB_DISCOUNT_FACTOR`, default: `0.99`).
+9. **`sliding-window-ucb-pending`** uses the same global completion window and reward as Sliding-Window UCB. For an observed eligible backend, it maximizes
+
+   $$S_i=\widehat\mu_i+\sqrt{2\ln(\max(1,N))/n_i}-\lambda p_i.$$
+
+   Here $N$ includes retained observations from temporarily ineligible backends. The pre-reservation proxy in-flight count $p_i$ includes assigned requests awaiting terminal accounting, including those whose feedback will be excluded. `SBR_PROXY_MAB_PENDING_PENALTY` and `--mab-pending-penalty` set $\lambda$, default `0.05`. They accept finite nonnegative values, including zero. Default window size is 1,000 and latency scale is 100 ms. The exploration coefficient remains two. The coefficient is exploratory and comparative performance has yet to be established.
+
+   Cold arms retain the existing selection precedence. First choose an eligible unobserved backend with no outstanding work. Otherwise maximize the adjusted score among observed arms, or choose minimum outstanding work if every eligible arm is unobserved. Configuration order resolves ties. Valid feedback enters the shared ring in application order, including delayed completions from unhealthy backends. Every terminal outcome releases its original reservation. Setting the penalty to zero reproduces Sliding-Window UCB.
+
+   Local outstanding work includes service, queueing, network transfer, and terminal-accounting delay. Traffic from other proxies and cancellation propagation can separate it from physical backend queue occupancy. The score supplies no admission cap or stability guarantee. Large coefficients can make current load dominate learning.
 
 ### Policy Equivalence and Fairness
 
@@ -194,7 +205,13 @@ For an instrumented trial, add `--collect-observability --diagnostic-sample-ever
 
 For a MAB mechanism study, add `--bandit-trace` to a trial with positive diagnostic sampling. The corresponding proxy option is `SBR_PROXY_BANDIT_TRACE=true` and defaults to off. Sampled selections record the decision branch and the effective counts, means, and scores of arms visited by the selector. An unobserved arm has no usable mean or score. The cold-arm branch can return before visiting later arms. The selection's in-flight snapshot precedes reservation. A correlated `bandit_feedback` record follows reward application or exclusion. Its monotonic age is measured from assignment through the feedback callback. Selection and feedback share a per-process order assigned under the routing lock.
 
+For `sliding-window-ucb-pending`, each visited arm retains its original UCB `score` and adds `pending.count`, `pending.penalty`, and `pending.adjusted_score`. Adjusted scores can be negative. The decision records the ordered eligible IDs, and feedback records the original `upstream_status` separately from the proxy's HTTP status. This preserves attribution for transport errors and backend overload responses. All new fields are additive to diagnostic schema 1.
+
+If multiplication by an extreme finite coefficient exceeds float64 range, diagnostic penalty values saturate at the maximum finite float64 and mark `pending.saturated=true`. The selector compares UCB differences against coefficient times pending-count differences, preserving ranking when absolute score representations overflow or lose small differences at equal load. Replay checks the finite representation and verifies the ranking from the original components.
+
 Use `python -B -m experiments.analysis.mab_diagnostics <trial-directory>` on a complete every-request degradation/recovery trace with the standard backend and policy settings. The audit reconciles k6, proxy and backend counters, replays feedback to check score components, and verifies selection against recorded scores and pending work. It emits one JSON summary per trial. The detailed trace uses the existing bounded event queue and adds one record per sampled assigned request plus the visited score components. Rerun an otherwise matched control with the detail flag off when measuring its overhead.
+
+The same command supports the pending policy on that fixture and reads its recorded coefficient, window, and latency scale from `metadata.json`. Its independent replay reconstructs window insertion and eviction, original UCB components, pre-reservation loads, penalties, adjusted scores, cold branches, and tie-breaking. Exact replay requires every-request sampling, zero drops, complete feedback, and matching operational counters. The programmatic `check_bandit` verifier also accepts explicit window size, latency scale, coefficient, and configured backend IDs for controlled integration traces.
 
 Monitoring uses bounded counters and fixed histogram buckets. Each process has a 1,024-event queue when diagnostics are enabled. Request paths enqueue without waiting for output. The queue drops events under pressure, and shutdown allows up to one second to drain it. Sampling every request can increase allocations, output volume and scheduling pressure, so keep sampling settings consistent in comparisons. The orchestrator snapshots show endpoint state before and after a trial. Queue peaks between snapshots are visible only in sampled events or with separate periodic scraping.
 

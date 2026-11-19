@@ -707,8 +707,7 @@ class TestReproducibilityAndValidation(unittest.TestCase):
         self.assertEqual(idx["total_trials"], 2)
         self.assertTrue((results_dir / "INDEX.md").is_file())
 
-    # 12. Recognition and normalization of all eight routing policies
-    def test_all_eight_policies_recognized_and_normalized(self):
+    def test_all_policies_recognized_and_normalized(self):
         from experiments.orchestrator.config import (
             SUPPORTED_POLICIES,
             ValidationError,
@@ -723,6 +722,7 @@ class TestReproducibilityAndValidation(unittest.TestCase):
             "p2c-peak-ewma",
             "ucb1",
             "sliding-window-ucb",
+            "sliding-window-ucb-pending",
             "discounted-ucb",
         }
         self.assertEqual(SUPPORTED_POLICIES, expected_policies)
@@ -733,6 +733,7 @@ class TestReproducibilityAndValidation(unittest.TestCase):
             "ucb_1": "ucb1",
             "ucb-1": "ucb1",
             "sliding-window-ucb": "sliding-window-ucb",
+            "sliding-window-ucb-pending": "sliding-window-ucb-pending",
             "sliding_window_ucb": "sliding-window-ucb",
             "sw-ucb": "sliding-window-ucb",
             "sw_ucb": "sliding-window-ucb",
@@ -781,6 +782,7 @@ class TestReproducibilityAndValidation(unittest.TestCase):
         self.assertEqual(env["SBR_PROXY_MAB_LATENCY_SCALE"], "150ms")
         self.assertEqual(env["SBR_PROXY_MAB_DISCOUNT_FACTOR"], "0.95")
         self.assertEqual(env["SBR_PROXY_MAB_SW_WINDOW"], "500")
+        self.assertEqual(env["SBR_PROXY_MAB_PENDING_PENALTY"], "0.05")
         self.assertEqual(env["SBR_PROXY_P2C_SEED"], "12345")
         self.assertEqual(env["SBR_PROXY_PEAK_EWMA_DECAY"], "15s")
         self.assertEqual(env["SBR_PROXY_PEAK_EWMA_INITIAL_RTT"], "5ms")
@@ -802,6 +804,17 @@ class TestReproducibilityAndValidation(unittest.TestCase):
             cfg_bad = ExperimentConfig(scenario=scenario, routing_policy="discounted-ucb", dry_run=True, mab_discount_factor=bad_gamma)
             with self.assertRaises(ValidationError):
                 cfg_bad.validate()
+
+        for penalty in (0, 0.05, 2, 1.7976931348623157e308):
+            candidate = ExperimentConfig(scenario=scenario, routing_policy="sliding-window-ucb-pending",
+                                         dry_run=True, mab_pending_penalty=penalty)
+            candidate.validate()
+            self.assertEqual(float(candidate.get_proxy_policy_env()["SBR_PROXY_MAB_PENDING_PENALTY"]), penalty)
+        for penalty in (-1, float("nan"), float("inf"), -float("inf"), "0.05", True, 10**1000):
+            candidate = ExperimentConfig(scenario=scenario, routing_policy="sliding-window-ucb-pending",
+                                         dry_run=True, mab_pending_penalty=penalty)
+            with self.assertRaises(ValidationError):
+                candidate.validate()
 
     # 14. Cleanup safety prevents deleting unrelated deployments and datasets
     def test_cleanup_safety_protects_deployments_and_datasets(self):
@@ -833,6 +846,26 @@ class TestReproducibilityAndValidation(unittest.TestCase):
         self.assertEqual((r1 / "preserved_data.txt").read_text(encoding="utf-8"), "critical audit data")
 
     # 15. Policy override generation and research journal template
+    def test_pending_policy_metadata(self):
+        from experiments.orchestrator.runner import ExperimentRunner
+        from experiments.orchestrator.cli import build_parser
+
+        args = build_parser().parse_args(["--policy", "sliding-window-ucb-pending", "--mab-pending-penalty", "0"])
+        self.assertEqual(args.mab_pending_penalty, 0)
+        for coefficient in (0, .05):
+            with self.subTest(coefficient=coefficient):
+                cfg = ExperimentConfig(
+                    scenario=load_scenario("scenario_1_homogeneous"), routing_policy="sliding-window-ucb-pending",
+                    dry_run=True, output_dir=Path(self.test_dir)/f"pending-{coefficient}", mab_pending_penalty=coefficient,
+                )
+                cfg.validate()
+                result = ExperimentRunner(cfg).run_trial(1)
+                self.assertTrue(result.valid)
+                meta = json.loads((result.run_dir/"metadata.json").read_text(encoding="utf-8"))
+                self.assertEqual(float(meta["configuration"]["policy_configuration"]["SBR_PROXY_MAB_PENDING_PENALTY"]), coefficient)
+                self.assertIn(f'SBR_PROXY_MAB_PENDING_PENALTY: "{coefficient}"',
+                              (result.run_dir/"compose.override.yaml").read_text(encoding="utf-8"))
+
     def test_trial_policy_override_and_journal_template(self):
         from experiments.orchestrator.config import ExperimentConfig, load_scenario
         from experiments.orchestrator.history import ExperimentHistory

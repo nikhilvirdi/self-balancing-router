@@ -178,6 +178,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sliding-Window UCB observation window size (e.g. 1000)",
     )
     parser.add_argument(
+        "--mab-pending-penalty",
+        type=float,
+        default=0.05,
+        help="Finite nonnegative outstanding-request penalty (default: 0.05)",
+    )
+    parser.add_argument(
         "--mab-discount-factor",
         type=float,
         default=None,
@@ -280,6 +286,7 @@ def main(argv: List[str] = None) -> int:
             mab_latency_scale=args.mab_latency_scale,
             mab_sw_window=args.mab_sw_window,
             mab_discount_factor=args.mab_discount_factor,
+            mab_pending_penalty=args.mab_pending_penalty,
             docker_build=args.build,
             collect_observability=args.collect_observability,
             diagnostic_sample_every=args.diagnostic_sample_every,
